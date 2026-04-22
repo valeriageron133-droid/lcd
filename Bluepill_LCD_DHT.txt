@@ -1,0 +1,1502 @@
+/*! #############################################################################
+**@file
+**    Archivo        : main.c
+**    Proyecto       : Bluepill_LCD_DHT
+**    Procesador     : STM32F103C8T6
+**    Plataforma     : Blue Pill
+**    Herramienta    : Mbed Keil Studio Cloud
+**    Compilador     : Mbed Online C Compiler
+**    Version        : Keil Studio Cloud 1.6.16
+**    Fecha/Hora     : 18-12-2019, 11:48, # CodeGen: 0
+**    Descripción    :
+**         Este proyecto provee las rutinas básicas para el depliege de la 
+**         temperarura y humedad en un display LCD alfanumérico en modo de
+**         4 bits una pantalla LCD con interfaz Hitachi HD44780 con tres
+**         configuraciones de puertos (paralelo, SPI e I2C).y adicionalmente
+**         en un Display de 7 segmentos, además las rutinas de promediación 
+**         de las mediciones de un Sensor de Temperatura analógico.
+**         Contiene las rutinas de Barrido para un Display de 7 segmentos de 
+**         Ánodo Común de 4 dígitos y para el LM35.
+**         - Utilizando los GPIO's
+**         - Utilizando el SPI y el C.I. SN74HC595 o CD4094
+**         - Utilizando el I2C y el Modulo PCF8574 y PCF8574A
+**         soporta las siguintes pantallas LCD alfanuméricas:
+**         8x1, 16x1, 20x1, 16x2, 20x2, 24x2, 32x2, 40x2, 16x4, 20x4
+**   Componentes     : GPIO, Timer, SPI, I2C, TextLCD.
+**   Configuraciones : TextLCD, TextLCD_SPI, TextLCD_I2C
+**   Autores         :
+**         ATEAM Development Group:
+**          - Antulio Morgado Valle
+**
+**   Versión        : Beta
+**   Revisión       : A
+**   Release        : 0
+**   Bugs & Fixes   :
+**   Date           : 20/04/2020
+**
+**
+** El permiso se otorga por este medio, sin cargo, a cualquier persona que
+** obtenga una copia de este software y los archivos de documentación asociados
+** (el "Software"), para operar en el Software sin restricciones, incluidos,
+** entre otros, los derechos de uso, copia, modificación, fusión, publicación,
+** distribución, sublicencia y/o venta de copias de el Software, y para permitir
+** que las personas a quienes se suministra el Software lo hagan, sujeto a las
+** siguientes condiciones:
+**
+** El aviso de copyright anterior y este aviso de permiso se incluirán en todas
+** las copias o partes sustanciales del Software.
+**
+** EL SOFTWARE SE PROPORCIONA "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO, EXPRESO
+** O IMPLÍCITO, INCLUYENDO PERO NO LIMITADO A LAS GARANTÍAS DE COMERCIABILIDAD,
+** APTITUD PARA UN PROPÓSITO PARTICULAR Y NO INCUMPLIMIENTO. EN NINGÚN CASO,
+** LOS AUTORES O TITULARES DE DERECHOS DE AUTOR SERÁN RESPONSABLES POR CUALQUIER
+** RECLAMACIÓN, DAÑOS U OTRAS RESPONSABILIDADES, YA QUE SEA RESPONSABLE DE UN
+** CONTRATO, CORTE U OTRA MANERA, DERIVADOS DE, FUERA O EN CONEXIÓN CON
+** EL SOFTWARE O EL USO O OTRAS REPARACIONES EN EL SOFTWARE.
+** ###########################################################################*/
+/*
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+:  Includes
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+*/
+#include "stm32f103c8t6.h"
+#include "mbed.h"
+#include "AnalogIn.h"
+#include "I2C.h"
+#include "SPI.h"
+#include "Serial.h"
+#include "DHT.h"
+#include "TextLCD.h"
+#include "TextLCD_Config.h"
+#include "TextLCD_UDC.h"
+#include "Escalas.h"
+#include <stdio.h>
+#include <cstdint>
+
+/*
+:...............................................................................
+:  Definiciones
+:...............................................................................
+*/
+#define FALSE           0           // Estado FALSO
+#define TRUE            1           // Estado VERDADERO
+#define ON              0           // Estado para ENCENDIDO
+#define OFF             1           // Estado para APAGADO
+#define HIGH            1           // Estado para el Nivel Alto
+#define LOW             0           // Estado para el Nivel Bajo#define LED_ON          0           // Estado para el Led Encendido
+#define LED_OFF         1           // Estado para el Led Apagado
+#define BUZZ_TYPE       1           // Tipo de Buzzer: 0=Pasivo, 1=Activo 
+#define BUZZ_ON         0           // Estado para Buzzer Encendido
+#define BUZZ_OFF        1           // Estado para Buzzer Apagado
+#define KEY_ON          0           // Estado para boton presionado
+#define KEY_OFF         1           // Estado para boton sin presionar
+#define KEY_HOLD        2           // Estado para boton mantenido
+#define KEY_RELEASE     3           // Estado para boton liberado
+#define KEY_REPEAT      4           // Estado para boton repetido
+#define TICKER_RATE     1000        // Periodo de interrupción Ticker (us)
+#define BAUD_RATE       115200      // Velocidad de Transmisión (Bauds))
+                                    // Velocidades Permitidas:
+                                    // 300, 600, 1200, 2400, 4800, 9600,
+                                    // 14400, 19200, 28800, 38400, 57600
+                                    // 115200, 230400, 460800, 921600
+#define LCD_INTERFACE   2           // Tipo Interfaz del LCD: 0=Normal, 1=I2C, 2=SPI
+#define I2C_ADDRESS     0x4E        // Dirección I2C para Interfaz al LCD: 0x7E, 0x4E, 
+#define LCD_SIZE        LCD20x4     // Tipo de HD44780, LCD20x4,  LCD16x4,  LCD16x2, 
+#define LCD_LSB_FIRST   0           // LCD Bit Mas Significativo Primero: 0=MSB(default), 1=LSB
+#define LCD_Filas       4           // Número de Renglones del LCD
+#define LCD_Columnas    20          // Número de Caracteres x Renglón del LCD
+#define DS3231_ADDRESS  0xD0        // Dirección I2C para Interfaz al RTC DS3231: 0xD0, 0xD8
+#define DAC_ADDRESS     0xC0        // Dirección I2C para Interfaz al MCP4725: 0xC0, 0xC2, 
+#define OLED_ADDRESS    0x78        // Dirección I2C para Interfaz al OLED: 0x78, 0x7A
+#define OLED_ENABLE     0           // Habilita el Modulo DS3231: 0=No, 1=Si
+#define DAC_ENABLE      0           // Habilita el Modulo MCP4725: 0=No, 1=Si
+#define LEDKEY8_ENABLE  0           // Habilita el Modulo LED&KEY: 0=No, 1=Si
+#define DHT_TYPE        DHT22       // Tipo de Sensor de Humedad y Temperatura: DHT11, DHT22, SEN11301P, SEN51035P, AM2302
+#define DHT_PIN         PB_1        // Pin de datos del Sensor de Temperatura y Humedad
+#define DISPLAY_TYPE    1           // Tipo de Display: 0 = Cátodo Común 1= Ánodo Común
+#define RGB_TYPE        0           // Tipo de LED RGB: 0=Cátodo Común, 1=Ánodo Común
+#define RATE_TIME       4           // Tiempo de Encendido de los Digitos (ms)
+#define BLINK_TIME      500         // Tiempo de Parpadeo del Display (ms)
+#define SHIFT_TIME      750         // Tiempo de Corrimiento del Display (ms)
+#define SENSOR_TIME     2500        // Tiempo de Lectura del Sensor (ms)
+#define SECUENCER_TIME  5000        // Tiempo entre secuencias (ms)
+
+// Define el Tipo de Led RGB
+#if RGB_TYPE == 0                   // Si el Led RGB es Cátodo Común
+#define LED_ON          1           // Estado para el Led encendido
+#define LED_OFF         0           // Estado para el Led encendido
+#endif
+#if RGB_TYPE == 1                   // Si el Led RGB es Ánodo Común
+#define LED_ON          0           // Estado para el Led encendido
+#define LED_OFF         1           // Estado para el Led encendido
+#endif
+
+/*
++-------------------------------------------------------------------------------
+|  Configuración de Puertos 
++-------------------------------------------------------------------------------
+*/
+Ticker      Barrido;                // Inicializa la Interrupción por Timer
+DigitalOut  led_monitor(LED1);      // Inicializa el LED Monitor (Interno)
+DigitalOut  latch_enable(PB_5);     // Inicializa el pin del LE del 74HC573 (Latch)
+BusOut      anodos  (PB_12, PB_13, PB_14, PB_15);   // Ánodos: (Uni Dec Cent Mill)  A1 A2 A3 A4 (lsb -> msb)
+BusOut      catodos (PA_8,PA_9,PA_10,PA_11,PA_12,PA_15,PB_3,PB_4);     // Cátodos: p e d c b a f g  (lsb -> msb))
+PwmOut      buzzer(PB_0);           // Inicializa el Buzzer Piezo Eléctrico (PB0_TIM3_CH4N)
+AnalogIn    cpu_temp(ADC_TEMP);     // Entrada para la Temperatura del CPU
+//AnalogIn    adc_temp (PA_0);        // Entrada para Sensor de Temperatura LM35(A/D Ch0)
+/*
+** -------------------------------------------------------------------
+**    Inicialización de los Pines de Funciones Especiales.
+** -------------------------------------------------------------------
+*/
+// Host PC Communication channels
+/*************************************************
+* Initialize the Serial Terminal to PC
+***************************************************/
+//Serial      pc_terminal(USBTX, USBRX);   // Tx, Rx   (USB)
+//Serial      pc_terminal(PA_9, PA_10);    // Tx, Rx Using MAX3232 or BlueTooth (UART1)
+Serial      pc_terminal(PA_2,PA_3);        // Terminal Serial (TTL Level) (Tx, Rx) (UART2)
+
+/*************************************************
+* Initialize the Serial Terminal for Bluetooth Communication support
+***************************************************/
+//Serial   bluetooth(PB_10, PB_11);       // Tx, Rx (UART3)
+
+/*************************************************
+* Initialize the CAN Port 
+***************************************************/
+// CAN Communication
+//CAN         can_lcd(PB_7,PB_6);       // Rd, Td
+
+/************************************************* 
+* I2C Communication
+************************************************** 
+* Initialize the library with the numbers of the interface pins
+* Board Blue Pill STM32F103C8T6
+* IDE  Mbed On Line Compiler
+*           I2C         PCF8574A
+* Pin       Board       Module
+* (PB_10)   I2C2_SCL    SCL   (white) + resistance pull-up 4.7k
+* (PB_11)   I2C2_SDA    SDA   (blue)  + resistance pull-up 4.7k
+* 3.3V      3.3V        3.3V  (red)
+* GND       GND         GND   (black)
+***************************************************/
+//I2C      i2c(PB_11,PB_10);        // SDA, SCL (I2C2)
+
+/*************************************************
+* SPI Communication
+**************************************************
+* Initialize the library with the numbers of the interface pins
+* Board Blue Pill STM32F103C8T6
+* IDE  Mbed On Line Compiler
+*           SPI             SN74HC595
+* Pin       Board           I.C.            
+*(PA_7)     SPI1_MOSI       SER   (blue)    
+*(PA_6)     SPI1_MISO       none   
+*(PA_5)     SPI1_CLK        SRCLK (white)
+*(PA_4)     SPI1_NSS1       RCLK  (Yellow) 
+* 3.3V      3.3V            3.3V  (red)
+* GND       GND             GND   (black)
+***************************************************/
+//SPI         spi(PA_7,PA_6,PA_5,PA_4);   // SPI_MOSI, SPI_MISO, SPI_SCK, SPI_CS
+
+/*
+******************************************************************************
+*                   LCD Instantiation 
+* Instantiation for creating a TextLCD interface 
+* for using control and functions over selected port 
+*------------------------------------------------------------------------------
+*   El LCD puede trabajar con 3 configuraciones de la Interfaz
+*   Tipo Interfaz del LCD: 
+*   0 = Normal      4bit bus: (RS, E, D4-D7, BL+)
+*   1 = I2C         I2C  bus: (SDA, SCL)
+*   2 = SPI         SPI  bus: (MOSI, MISO, SCLK, SS)
+*******************************************************************************
+*/
+#if LCD_INTERFACE == 0
+TextLCD     lcd(PA_10,PA_11,PA_12,PA_15,PB_3,PB_4, TextLCD::LCD_SIZE);   // 4bit bus: rs,rw,e,bl, d4-d7  (lsb -> msb)
+PwmOut      BL(PA_9);                   // PWM para Backlight del LCD
+AnalogIn    backlight (PA_7);           // Inicializa Canal Analógico para control del  BackLight
+DigitalOut  LE      (PB_5);             // Pin para Latch Enable (SN74HC573)
+#endif
+#if LCD_INTERFACE == 1
+I2C         i2c_lcd(PB_11,PB_10);                   // SDA, SCL
+TextLCD_I2C lcd(&i2c_lcd, I2C_ADDRESS, TextLCD::LCD_SIZE);  // Address 0x4E or 0x7E I2C bus, PCF8574A Arduino Shield, LCD Type
+#endif
+#if LCD_INTERFACE == 2
+SPI         spi_lcd(PA_7,PA_6,PA_5,PA_4);           // MOSI, MISO, SCLK, SS
+DigitalOut  SSel(PA_4);                             // Inicializa el Pin de Seleccion de Esclavo SPI
+TextLCD_SPI lcd(&spi_lcd, PA_4, TextLCD::LCD_SIZE, TextLCD::HD44780);    // SPI bus, SN74595 expander, CS pin, LCD Type 
+#endif
+
+/*
+** -------------------------------------------------------------------
+**    Instanciación del Sensor de Temperatura y Humedad DHT22  
+** --------------------------------------------------------------------
+**  Works with DHT11, DHT21, DHT22
+**             SEN11301P,  Grove - Temperature&Humidity Sensor     (Seeed Studio)
+**             SEN51035P,  Grove - Temperature&Humidity Sensor Pro (Seeed Studio)
+**             AM2302   ,  temperature-humidity sensor    
+**             RHT01,RHT02,RHT03,  Humidity and Temperature Sensor (Sparkfun)
+*/
+
+DHT         Dht         (DHT_PIN, DHT_TYPE);  // DHT_PIN, DHT_TYPE: (DHT11, DHT22, etc.)
+Timer       Refresh_DHT;            // 
+uint16_t    refresh_rate = 2500;    // Tiempo entre lecturas (uSeg)
+
+/*
++-------------------------------------------------------------------------------
+|  Variables Globales de Usuario 
++-------------------------------------------------------------------
+*/
+
+uint16_t scan_rate=RATE_TIME;       // Numero de veces que se barre el Display (25 veces/seg)
+uint16_t blink_rate=BLINK_TIME;     // Numero de veces que parpadean el Display (2 veces/seg)
+uint16_t shift_rate=SHIFT_TIME;     // Numero de veces que hace corrimiento el Display (cada 1.5 veces/seg)
+uint16_t secuencer_rate=SECUENCER_TIME;  // Numero de veces que cambia la secuencia (cada 5 seg)
+uint16_t sensor_rate=SENSOR_TIME;   // Numero de veces que se barre la Torreta (2 veces/seg)
+uint16_t No_Secuencias=160;         // Número de secuencias a desplegar
+uint16_t rate_counter=0;            // Contador de número de veces que se ha barrido el Display
+// ++++++++++++++++++++ Generador de Caracteres ++++++++++++++++++++++++++++++++
+//             Offset:  0    1    2    3    4    5    6    7    8    9   10    11  12   13   14   15   16   17   18   19   20   21  22    23   24   25   26   27   28   29   30   31   32   33   34   35   36   37   38   39   40   41   42   43   44   45   46   47  48   49   50   51   52   53   54   55   56   57   58   59   60   61   62   63   64   65   66   67   68   69   70   71   72   73   74   75   76   77   78   79   80   81   82   83   84   85   86   87   88   89   90   91  92
+//Caracter a Desplegar: 0    1    2    3    4    5    6    7    8    9    A     b   C    d    E    f    G    h    I    j    K    L   M     n    o    P    q    r    S    t    u    V    W    X    y    Z  space a    e    /e   @    ñ    [    ]    U    /U   /_   -    _   _/_  /=   =   ==    °   +/c   +n   +/c  +u   o    c    n    /c   u    ^    ¬   + >   ^   / v   <    v    >   i    +i   /i   +/i  ii   +ii  #   /#    J    /J   -J   -/J  |    ||     |  +    /+   F    +F   /F   +/F  null         !  "   #   $  %   &   '   (    )   *   +   -   .   /   :   ;   <   >   ?   @
+uint8_t  Segmentos[]={0x81,0xE7,0x49,0x43,0x27,0x13,0x11,0xC7,0x01,0x03,0x05,0x31,0x99,0x61,0x19,0x1D,0x91,0x35,0xBD,0xE3,0x2D,0xB9,0x85,0x75,0x71,0x0D,0x07,0x7D,0x13,0x39,0xF1,0xB1,0xA1,0x25,0x23,0x49,0xFF,0x41,0x09,0x03,0x11,0x55,0x99,0xC3,0xA1,0x85,0xDF,0x7F,0xFB,0xDB,0x7B,0x5F,0x5B,0x0F,0x1F,0x8F,0x4F,0x2F,0x71,0x79,0x75,0x73,0xF1,0x3F,0x9F,0xCF,0x6F,0x7D,0xF9,0xF3,0x77,0xFD,0xBF,0xF7,0xEF,0xF5,0xAF,0x6D,0x37,0xE3,0xB9,0x9D,0xC7,0xBD,0xA5,0xE7,0x3D,0x67,0x1D,0x47,0x63,0x39,0x00};
+// ++++++++++++++++++++++ Selector de Digitos ++++++++++++++++++++++++++++++++++
+uint8_t  Digitos[]={0x08,0x04,0x02,0x01,0x00,0x0F};     // Millares, Centenas, Decenas, Unidades, Apagados, Encendidos
+uint8_t  Numeros[]={1,2,3,4};       // Valor a Desplegar
+uint8_t  Cadena[]={33,0,21,10,36,14,28,18,22,14,36,35,10,12,10,29,14,23,12,0,36,36,36,36}; // Mensaje a Desplegar
+uint8_t  string_size=(sizeof(Cadena)-3);  // Número de caracteres a desplegar para la Cadena (4)
+uint8_t  millares=17;               // H 
+uint8_t  centenas=23;               // 0
+uint8_t  decenas=21;                // L
+uint8_t  unidades=10;               // A
+uint8_t  residuo=0;     
+//uint8_t  Segmentos[]={0xE7,0x49,0x43,0x27};   // Números a Desplegar
+//uint8_t  Segmentos[]={0x25,0x81,0xB9,0x05};     // Texto a Desplegar
+uint8_t  shift_count=0;     // Contador de Corrimientos del Display
+uint8_t  blinking=0;        // Estado el parpadeo
+uint8_t  punto_decimal=0;   // Posición del punto decimal: 0=sin punto, 1=unidades, 2=decenas, 3=centemas, 4=millares.
+uint8_t  tempo=0;           // Variable temporal (para guardar datos temporalmente)
+// ++++++++++++++++++++++ Sensor de Temperatura y Humedad ++++++++++++++++++++++
+float    humedad;           // Variable para la Humedad del DHT
+float    temperaturaC;      // Variable para la Temperatura del DHT
+float    punto_rocio;       // Variable para el Punto de Rocío del DHT
+uint16_t temp_cpu;          // Temperatura del CPU
+//float    temp_cpu=0;     // Variable para la Temperatura (rango: 0.0 - 1.0)
+uint32_t promedio=0;        // Variable para calcurar el promedio de la Temperatura
+uint32_t resultado=0;       // Variable para guardar el promedio de la Temperatura
+uint8_t  i=0;               // Indice para los digito s
+uint16_t j=0;               // Indice para las secuencias
+uint16_t v_flashings;       // Contador de parpadeos del Led Monitor
+uint16_t contador=0;        // Contador de mili segundos
+bool     flag1=FALSE;       // Bandera para el Display
+bool     flag2=FALSE;       // Bandera para el Latch
+bool     flag3=FALSE;       // Bandera para el Sensor
+bool     blink_flag=FALSE;  // Bandera de Parpadeo: 0=Sin Parapadeo, 1=Parpadeo
+bool     shift_flag=FALSE;  // Bandera de corrimientos: 0=Sin corrimeinto, 1=Con Corrimiento
+/* -------------------------------------------------------------------
+**   Variables para Códigos de Error.
+**
+**   Variables que guardan el estado de los dispositivos y sensores.
+** -------------------------------------------------------------------*/
+int16_t  error_code;          //Retorno del Código de Error de las funciones
+
+/* END variables */
+
+/*
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+|  Definición de Funciones Prototipo y Rutinas de los Vectores de Interrupción
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+*/
+        // Las Definiciones de Funciones Prototipo
+        // y Apuntadores a Vectores de Interrupciones van aquí !
+void Barrido_OnInterrupt(void);     // Vector de Interrupción del Ticker
+void Setup(void);                   // Función de Inicialización
+void Init_Interfaces(void);         // Función para Incicializar Puertos de comunicación
+void Caratula(void);                // Carátula de Bienvenida
+void I2C_Scanner(void);             // Rutina para buscar dispositivos I2C
+void Test_LCD(void);                // Rutina de prueba para el LCD
+void LCD_Update(void);              // Rutina para actualizar datos en la LCD
+void Despliega_LCD(void);           // Rutina para actualizar datos en la LCD
+void Scan_Display(void);            // Barrido del Display de 7 Segemntos
+void Get_DHT(void);                 // Obtiene Temperatura y Humedad
+void Get_CPU_Temperature(void);     // Obtiene la Temperatura del Sensor
+void Blinking_Led(void);            // Parapadeo del Led Monitor
+void Clear_Screen(void);            // Limpia la Pantalla de la Terminal
+void Buzzer_Beep(void);             // Prueba del Buzzer
+void Buzzer_SetPeriodMode(float Periodo,bool Estado);
+/* END prototypes */
+
+/* END definitions */
+/*
+#===============================================================================
+|
+|               P R O G R A M A     P R I N C I P A L
+|
+#===============================================================================
+*/
+int main()
+{                           // Inicialización de variables, puertos e interrupciones
+//+++++++++++++++++++ Secuencia  Principal +++++++++++++++++++++++++++++++++++++                              
+//       Inicialización de variables, puertos, interrupciones y carátula            
+    Setup();
+    wait(3);
+    Clear_Screen();
+    Caratula();
+//    pc_terminal.printf ("\n\e[13;10HSeleccion del Modo de Operacion:\n\r");
+//+++++++++++++++++++ Lazo Principal +++++++++++++++++++++++++++++++++++++++++++
+//            El Lazo del Programa principal está aquí !!!
+    while (true)
+    {
+        if (flag1==TRUE)        // Se prendió el semáforo_1?
+        {
+//            Scan_Display();     // Parapadeo del LED por cada ciclo de barrido
+            flag1=FALSE;        // Apaga el semáforo
+        }
+        if (flag2==TRUE)        // Se prendió el semáforo_2?
+        {
+            Despliega_LCD();    // Rutina para actualizar datos en la LCD
+            LCD_Update();       // Actualiza la información del LCD
+            flag2=FALSE;        // Apaga el semáforo_2
+        }
+        if (flag3==TRUE)        // Se prendió el semáforo_3?
+        {
+            pc_terminal.printf("\r\e[13;10HLectura de los Sensores: \e[0m\n\r");
+            Refresh_DHT.start();    // Inicia el reloj de lecturas
+            Get_DHT();          // Ciclo de lectura del sensor de Temperatura DHT           
+            Get_CPU_Temperature();  // Ciclo de lectura del sensor de Temperatura LM35
+            Refresh_DHT.reset();    // Reinicia el reloj de lecturas
+            Blinking_Led();     // Parapadeo del LED por cada ciclo de barrido
+            flag3=FALSE;        // Apaga el semáforo_3
+        }
+    }
+}
+/* END main */
+
+/*
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+::
+::              V E C T O R E S    D E     I N T E R R U P C I Ó N
+::                  (Rutinas de Atención a Vectores de Interrupciones)
+::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+*/
+                // Las Rutinas de Atención a Interrupciones van aquí !
+/*
+................................................................................
+:       Rutinas de Barrido del Display
+................................................................................
+*/
+void Barrido_OnInterrupt()          // Rutina de Barrido para el Display
+{
+    scan_rate--;                    // Decrementa el tiempo de  despliege del Display
+    secuencer_rate--;               // Decrementa el tiempo del Secuenciador de la Torreta
+    sensor_rate--;                  // Decrementa el tiempo del Sensor de Temperatura
+    blink_rate--;                   // Decrementa el tiempo de parpadeo del Display
+    shift_rate--;                   // Decrementa el tiempo del Corrimiento del Display
+    if(!scan_rate)                  // Se acabo el tiempo de desplige?
+    {
+        scan_rate=RATE_TIME;        // Reinicia el tiempo en que se barre el Display (25 veces/seg)
+        Scan_Display();             // Barrido del Display de 7 Segmentos
+        flag1=TRUE;                 // Enciende el semáforo 1
+    }
+    if(!secuencer_rate)             // Se acabo el tiempo del Secuenciador?
+    {
+        secuencer_rate=SECUENCER_TIME;   // Reinicia el tiempo en que se barre el LCD (2 veces/seg)
+        flag2=TRUE;                 // Enciende el semáforo 2
+    }
+    if(!sensor_rate)                // Se acabo el tiempo de los sensores?
+    {
+        sensor_rate=SENSOR_TIME;    // Reinicia el tiempo en que se barre el DHT (0.5 veces/seg)
+        shift_flag=TRUE;            // Habilita el corrimiento del Display de 7 Segemntos
+        flag3=TRUE;                 // Enciende el semáforo 3
+    }
+    if(!blink_rate)                 // Se acabo el tiempo del Parpadeo?
+    {
+        blink_rate=BLINK_TIME;      // Reinicia el tiempo de parpadeo del Display (2 veces/seg)
+        blinking=!blinking;         // parpadeo
+        blink_flag=TRUE;            // Habilita el parpadeo en el Display de 7 Segemntos
+    }
+    if(!shift_rate)                 // Se acabo el tiempo de los Corrimientos?
+    {
+        shift_rate=SHIFT_TIME;      // Reinicia el tiempo en que realiza un corrimiento el Display (1 veces/seg)
+        shift_flag=TRUE;            // Habilita el corrimiento del Display de 7 Segemntos
+    }
+}
+/* END Events */
+
+/*
+ ______________________________________________________________________________
+/______________________________________________________________________________\
+|                                                                              |
+|                   F U N C I O N E S     P R O T O T I P O                    |
+|______________________________________________________________________________|
+\______________________________________________________________________________/
+*/
+                // Las Funciones Prototipo van aquí !
+/*! @brief
+* ===================================================================
+*    Función     :     Setup()
+*    Descripción :     Inicializa el Reloj del Sistema, Inicializa el  
+*          Buzzer, Configura la velocida de transmisión de la Terminal 
+*          Serial, Configura el Puerto de comunicación SPI y/o I2C,
+*          Frueba el funcionamiento de la Pantalla LCD y Finalmente 
+*          Inicializa la Interrupción por el Temporizador (Ticke).
+* @param
+*    Parámetros  :     Ninguno
+*    Retorna     :     Nada
+* ===================================================================
+*/
+void Setup()                // Función de Inicialización
+{
+/********************************************************************
+*   Configura el Reloj del Sistema                                  *
+*********************************************************************/
+    confSysClock();           // Inicialización del Sistema, Configure system clock (72MHz HSE clock, 48MHz USB clock)
+/********************************************************************
+*   Configura la Terminal Serial                                    *
+*********************************************************************/
+    pc_terminal.baud(BAUD_RATE);        // Se configura la velocidad de transmisión e inicia la comunicación serial.
+    pc_terminal.printf("\e[2J\e[H");    // Limpia la Pantalla de la Terminal
+    pc_terminal.printf(" System is Wake Up!.\n\r");
+/********************************************************************
+*   Prueba del Buzzer                                               *
+*********************************************************************/
+    pc_terminal.printf("Testing Buzzer... \n\r");
+    Buzzer_Beep();
+/********************************************************************
+*   Inicialización del DHT                                          *
+*********************************************************************/
+    pc_terminal.printf("DHT %i is Installed !!! \n\r", DHT_TYPE);
+//    Refresh_DHT.start();      // Reinicia el reloj de lecturas
+/********************************************************************
+*   Configuración de las Interfaces                                 *
+*********************************************************************/
+/* Mucho OjO !!! */ 
+    I2C_Scanner();
+    Init_Interfaces();  // Inicializa las Interfaces de comunicación 
+/********************************************************************
+*   Prueba de operación del LCD                                     *
+*********************************************************************/
+#if (((LCD_INTERFACE > 0) && (LEDKEY8_ENABLE == 0))==TRUE)
+    pc_terminal.printf("LCD Test, please wait...\n\r");  
+    Test_LCD();                   // Rutina de prueba del LCD
+    pc_terminal.printf("LCD Initialized Succesfuly...\n\r");
+#endif
+/********************************************************************
+*   Configufración del Display OLED     Mucho OjO !!!               *
+*********************************************************************/
+#if OLED_ENABLE == 1
+    pc_terminal.printf("OLED Initialized Succesfuly...\n\r");
+#endif
+/********************************************************************
+*   Arranque de la interrupción por el Ticker                       *
+********************************************************************* */ 
+    pc_terminal.printf("Ticker Starting Now...\n\r"); 
+//    timer_int.attach_us(&Ticker_OnInterrupt, TICKER_RATE);  // Le asigna el periodo de interrupción de 1ms (TICKER_RATE=1000)
+    Barrido.attach_us(&Barrido_OnInterrupt, TICKER_RATE);   // Le asigna el periodo de interrupción de 1ms (TICKER_RATE=1000)
+    pc_terminal.printf("System is Ready to Work !!!\n\r\n");// Termina la Inicialización
+}
+
+/*!
+*------------------------------------------------------------------------------
+* @name
+*     Función     :     Init_Interfaces()
+* @brief 
+*     Descripción :     Configura e inicializa las interfaces de comunicaciones
+* @param
+*     Parámetros  :     Ninguno
+* @return
+*     Retorna     :     Nada
+* 
+*------------------------------------------------------------------------------
+*/
+void Init_Interfaces() 
+{
+/********************************************************************************
+* @note                                                                         *
+*           C o n f i g u r a c i ó n    d e    l a    I n t e r f a c e        *
+*                               I 2 C                                           *
+*                           Mucho OjO !!!                                       *
+*                                                                               *
+*********************************************************************************/ 
+
+/*==============================================================================
+|   Configuración utilizando las Classes de Mbed 
+================================================================================*/
+/* 
+  i2c_wire.frequency(1000000);  // Frecuencia de operación para el I2C (1MHz)
+  i2c_wire.start();             // Inicio de operación para el I2C
+*/
+/*==============================================================================
+|   Configufración del Bus I2C utilizando HAL y los Registros 
+|   Configuración utilizando los Registros (Consultar RM0008 pag. 758)
+================================================================================*/
+//------------------------------------------------------------------------------
+//     HAL_RCC_APB2ENR      // Registros de Configuración para Habilitación de Reloj de Periféricos
+//     APB2 peripheral clock enable register  (RCC_APB2ENR)
+//     Configuración utilizando el Registro  (Consultar RM0008 pag. 146)
+//--------------------------------------------------------------------------------
+RCC -> APB1ENR |= 0x00200000;   // Bit 21 I2C2EN: I2C 1 clock enable 1:Habilita el I2C1 (I2C1_EN)
+//RCC -> APB1ENR |= 0x00400000;   // Bit 22 I2C2EN: I2C 2 clock enable 1:Habilita el I2C2 (I2C2_EN)
+RCC -> APB2ENR |= 0x00000001;   // Bit 0 AFIOEN: Alternate function I/O clock enable Habilita las Funciones Avanzadas de E/S (AFIO_EN)
+//-------------------------------------------------------------------------------
+//    HAL_I2C_CR1               // Registro de Control 1 del I2C1
+//-------------------------------------------------------------------------------
+I2C1 -> CR1 |= 0x0400;          // CK: Acknowledge enable
+I2C1 -> CR1 |= 0x0200;          // STOP: Stop generation
+I2C1 -> CR1 |= 0x0100;          // START: Start generation
+I2C1 -> CR1 |= 0x0020;          // ENPEC: PEC enable
+I2C1 -> CR1 |= 0x0002;          // SMBUS: SMBus mode
+I2C1 -> CR1 |= 0x0001;          // PE: Peripheral enable    
+
+  pc_terminal.printf("I2C Initialzed...\n\r");
+
+/********************************************************************************
+* @note                                                                         *
+*           C o n f i g u r a c i ó n    d e    l a    I n t e r f a c e        *
+*                               S P I                                           *
+*                           Mucho OjO !!!                                       *
+*                                                                               *
+*********************************************************************************/ 
+
+/*===============================================================================
+|   Configuración utilizando las Classes de Mbed 
+=================================================================================*/
+#if (LCD_INTERFACE != 2 && LEDKEY8_ENABLE == 1)
+  spi_tm1638.frequency(500000); // Frecuencia de operación para el SPI = 500KHz
+  spi_tm1638.format(8,3);       // Número de Bits y Modo de Operación para el SPI
+  SPI1 -> CR1 |= 0x0080;        // Bit 7 LSBFIRST: Formato de la Trama LSBFIRST: 0 = MSB (default), 1= LSB
+#endif
+#if (LCD_INTERFACE == 2 && LEDKEY8_ENABLE == 0)
+  spi_lcd.frequency(500000);    // Frecuencia de operación para el SPI = 500KHz
+  spi_lcd.format(8,0);          // Número de Bits y Modo de Operación para el SPI
+#if (LCD_MSB_FIRST == 1)
+  SPI1 -> CR1 |= 0x0080;        // Bit 7 LSBFIRST: Formato de la Trama LSBFIRST: 0 = MSB (default), 1= LSB
+                                //        BIT ORDER            LSBFIRST 
+                                // MSB                  LSB   ---------
+                                //  0  1  2  3  4  5  6  7        0     MSB (default)
+                                //  7  6  5  4  3  2  1  0        1     LSB
+#endif
+#endif
+/*==============================================================================
+|   Configufración del Puerto SPI utilizando HAL y los Registros 
+|   Configuración utilizando los Registros (Consultar RM0008 pag. 742)          
+================================================================================*/
+/*
+// ----------------------- Versión Simplificada --------------------------------
+//  RCC -> APB2ENR |= 0x00001;  // Habilita las Funciones Avanzadas de E/S (AFIO_EN)
+//  RCC -> APB2ENR |= 0x01000;  // Habilita el SPI1 (SPI1_EN)
+//  SPI1 -> CR1 |= 0x0080;      // Bit 7 LSBFIRST: Formato de la Trama LSBFIRST: 0 = MSB (default), 1= LSB
+    SPI1 -> CR1 |= 0x0003;      // Bit 0 CPHA: Clock phase, Bit 1 CPOL: Clock polarity (CPOL=0,CPHA=0)
+                                //  mode | POL PHA
+                                //  -----+--------
+                                //    0  |  0   0   (default)
+                                //    1  |  0   1
+                                //    2  |  1   0
+                                //    3  |  1   1
+    SPI1 -> CR1 |= 0x0004;      // Bit 2 MSTR: Selección Maestro/Esclavo Modo Maestro (MSTR)
+    SPI1 -> CR1 |= 0x0028;      // Bits 5:3 BR[2:0]: Baud rate control (Baud Rate = fpclk/128, 36MHz/64 = 562-5KHz )
+    SPI1 -> CR1 |= 0x0040;      // Bit 6 SPE: SPI enable (1: SPI Habilitado)
+    SPI1 -> CR1 |= 0x0080;      // Bit 7 LSBFIRST: Formato de la Trama LSBFIRST: 0 = MSB (default), 1= LSB
+                                //        BIT ORDER            LSBFIRST 
+                                // MSB                  LSB   ---------
+                                //  7  6  5  4  3  2  1  0        0     MSB (default)
+                                //  0  1  2  3  4  5  6  7        1     LSB
+//  SPI1 -> CR1 |= 0x4000;      // Bit 14 BIDIOE: Output enable in bidirectional mode 1: Output enabled (transmit-only mode)
+//  SPI1 -> CR1 |= 0x8000;      // Bit 15 BIDIMODE: Bidirectional data mode enable 1: 1-line bidirectional data mode selected
+
+    SPI1 -> CR2 |= 0x0004;      // Habilita salida de Slave Select
+
+// ----------------------- Versión Completa ------------------------------------
+//------------------------------------------------------------------------------
+//     HAL_SPI_RCC          // Registro de Reset y Control del Reloj:  SPI1 / AFIO
+//     HAL_RCC_APB2ENR      // Registros de Configuración para Habilitación de Reloj de Periféricos
+//------------------------------------------------------------------------------
+//  RCC -> APB2ENR |= 0x00001;    // Habilita las Funciones Avanzadas de E/S (AFIO_EN)
+  RCC -> APB2ENR |= 0x00001;    // Habilita las Funciones Avanzadas de E/S (AFIO_EN)
+  RCC -> APB2ENR |= 0x01000;    // Habilita el SPI1 (SPI1_EN)
+//  RCC -> APB1ENR |= 0x01;     // Habilita las Funciones Avanzadas de E/S (AFIO)
+//  RCC -> APB2ENR |= 0x01;     // Habilita las Funciones Avanzadas de E/S (AFIO)
+//  RCC -> APB2ENR |= 0x010000; // Habilita el SPI1 (bit 12 SPI1EN: SPI 1 clock enable)
+//------------------------------------------------------------------------------
+//    HAL_SPI_CR1(SPI_HandleTypeDef *hspi, uint8_t 0x06);
+//    HAL_SPI_CR1              // Registros de Control 1 del SPI1
+//------------------------------------------------------------------------------
+    SPI1 -> CR1 |= 0x0003;  // Bit 0 CPHA: Clock phase, Bit 1 CPOL: Clock polarity (CPOL=0,CPHA=0)
+                            //        BIT ORDER           mode | POL PHA
+                            // LSB                  MSB   -----+--------
+                            //  7  6  5  4  3  2  1  0      0  |  0   0
+                            //                              1  |  0   1
+                            //                              2  |  1   0
+                            //                              3  |  1   1
+  SPI1 -> CR1 |= 0x0004;    // Bit 2 MSTR: Selección Maestro/Esclavo Modo Maestro (MSTR)
+  SPI1 -> CR1 |= 0x0030;    // Bits 5:3 BR[2:0]: Baud rate control (Baud Rate = fpclk/128, )
+  SPI1 -> CR1 |= 0x0040;    // Bit 6 SPE: SPI enable (1: Periferico Habilitado)
+  SPI1 -> CR1 |= 0x0080;    // Bit 7 LSBFIRST: Formato de Dirección de la Trama, LSBFIRST: 0 = MSB (default), 1= LSB
+  SPI1 -> CR1 |= 0x0100;    // Bit 8 SSI: Internal slave select Este bit solo tiene efecto cuando el bit SSM es puesto. 
+//  SPI1 -> CR1 |= 0x0200;    // Bit 9 SSM: Software slave management Manejo del Esclavo por Software (Bit 9 SSM: Software slave management) Cuando el bit SSM es puesto, el pin de entrada NSS es reemplazdo con el valor del bit SSI. 
+//  SPI1 -> CR1 |= 0x0400;    // Bit 10 RXONLY: Receive only (0: Full duplex (Transmit and receive), Output disabled (Receive-only mode))
+//  SPI1 -> CR1 |= 0x0800;    // Bit 11 DFF: Data frame format Formato de la Trama de Datos: (DFF) 0=8bits, 1=16bits
+//  SPI1 -> CR1 |= 0x1000;    // Bit 12 CRCNEXT: CRC transfer next 0: Data phase (no CRC phase), 1: Next transfer is CRC (CRC phase)
+//  SPI1 -> CR1 |= 0x2000;    // Bit 13 CRCEN: Hardware CRC calculation enable 1: CRC calculation enabled
+//  SPI1 -> CR1 |= 0x4000;    // Bit 14 BIDIOE: Output enable in bidirectional mode 1: Output enabled (transmit-only mode)
+//  SPI1 -> CR1 |= 0x8000;    // Bit 15 BIDIMODE: Bidirectional data mode enable 1: 1-line bidirectional data mode selected
+//------------------------------------------------------------------------------
+//     HAL_SPI_CR2            // Registros de Control 2 del SPI1
+//------------------------------------------------------------------------------
+//  SPI1 -> CR2 |= 0x0001;    // Bit 0 RXDMAEN: Rx buffer DMA enable  1:Habilita el buffer de Rx buffer para DMA
+//  SPI1 -> CR2 |= 0x0002;    // Bit 1 TXDMAEN: Tx buffer DMA enable  1:Habilita el buffer de Tx buffer para DMA
+  SPI1 -> CR2 |= 0x0004;    // Bit 2 SSOE: SS output enable 1:Habilita salida de Slave Select
+//  SPI1 -> CR2 |= 0x0020;    // Bit 5 ERRIE: Error interrupt enable 1:Habilita la interrupción por errores
+//  SPI1 -> CR2 |= 0x0040;    // Bit 6 RXNEIE: RX buffer not empty interrupt enable 1:interrupción no enmascarada
+//  SPI1 -> CR2 |= 0x0080;    // Bit 7 TXEIE: Tx buffer empty interrupt enable 1:interrupción no enmascarada
+//------------------------------------------------------------------------------
+//     HAL_SPI_I2SCFGR        // Registros de Configuración I2S (SPI_I2SCFGR)
+//------------------------------------------------------------------------------
+//  SPI1 -> I2SCFGR |= 0x0000;    // Bit 15:12  Reserved, must be kept at reset value
+//  SPI1 -> I2SCFGR |= 0x0800;    // Bit 11 I2SMOD: I2S mode selection: 0: SPI mode is selected 1: I2S mode is selected
+//  SPI1 -> I2SCFGR |= 0x0400;    // Bit 10 I2SE: I2S Enable: 0: I2S peripheral is disabled 1: I2S peripheral is enabled
+//  SPI1 -> I2SCFGR |= 0x0200;    // Bit 9:8 I2SCFG: I2S configuration mode: 
+                                //  00: Slave - transmit
+                                //  01: Slave - receive
+                                //  10: Master - transmit
+                                //  11: Master - receive
+                                //  Note: This bit should be configured when the I2S is disabled.
+                                //  It is not used in SPI mode.
+//  SPI1 -> I2SCFGR |= 0x0080;    // Bit 7 PCMSYNC: PCM frame synchronization: 0: Short frame synchronization 1: Long frame synchronization
+//  SPI1 -> I2SCFGR |= 0x0000;    // Bit 6 Reserved: forced at 0 by hardware
+//  SPI1 -> I2SCFGR |= 0x0200;    // Bit 5:4 I2SSTD: I2S standard selection:
+                                //  00: I2S Philips standard.
+                                //  01: MSB justified standard (left justified)
+                                //  10: LSB justified standard (right justified)
+                                //  11: PCM standard
+// For more details on I2S standards, refer to Section 25.4.2: Supported audio protocols. Not used
+// in SPI mode.
+// Note: For correct operation, these bits should be configured when the I2S is disabled
+//  SPI1 -> I2SCFGR |= 0x0008;    // Bit 3 CKPOL: Steady state clock polarity: 0: I2S clock steady state is low level 1: I2S clock steady state is high level
+//  SPI1 -> I2SCFGR |= 0x0200;    // Bit 2:1 DATLEN: Data length to be transferred: 
+                                //  00: 16-bit data length
+                                //  01: 24-bit data length
+                                //  10: 32-bit data length
+                                //  11: Not allowed
+//  SPI1 -> I2SCFGR |= 0x0008;    // Bit 0 CHLEN: Channel length (number of bits per audio channel): 0: 16-bit wide 1: 32-bit wide
+*/
+  pc_terminal.printf("SPI Initialzed...\n\r");
+  if ((SPI1 -> CR1 & 0x0003) == 0) printf ("SPI Mode 0 (CPOL=0,CPHA=0) \n\r");
+  if ((SPI1 -> CR1 & 0x0003) == 1) printf ("SPI Mode 1 (CPOL=0,CPHA=1) \n\r");
+  if ((SPI1 -> CR1 & 0x0003) == 2) printf ("SPI Mode 2 (CPOL=1,CPHA=0) \n\r");
+  if ((SPI1 -> CR1 & 0x0003) == 3) printf ("SPI Mode 3 (CPOL=1,CPHA=1) \n\r");
+  if ((SPI1 -> CR1 & 0x0080) > 0) printf ("\rSPI LSB First \n\r");
+  else pc_terminal.printf ("\rSPI MSB First \n\r");
+}
+
+/*! @brief
+** ===================================================================
+**    Función     :     Caratula()  
+**    Descripción :     Imprime la carátula de bienvenida en la Terminal Serial
+**    Parámetros  :     Ninguno        
+**    Retorna     :     Nada
+** ===================================================================
+*/
+void Caratula()                     // Carátula de Bienvenida
+{
+  pc_terminal.printf("\n\rCargando...\n\r"); // Arranca el programa
+  pc_terminal.printf ("\n\t\e[1;37;41mInstituto Politecnico Nacional\e[0m\n\r");
+  pc_terminal.printf ("\e[1;37;42mESCUELA SUPERIOR DE INGENIERIA MECANICA Y ELECTRICA\e[0m\n\r\v");
+  pc_terminal.printf ("\t\e[1;31;40mPrueba \e[1;35;40mdel \e[1;33;40mSensor \e[1;34;40mde \e[1;32;40mTemperatura \e[1;37;46mDHT\e[0m\n\r\v\e[0m");
+  if(LCD_INTERFACE)
+  pc_terminal.printf ("\t\e[1;31;40mPrueba \e[1;35;40mde \e[1;33;40mla \e[1;34;40mPantalla \e[1;32;40mLCD \e[0m\n\r\v\e[0m");
+  if(OLED_ENABLE)
+  pc_terminal.printf ("\t\e[1;31;40mPrueba \e[1;35;40mde \e[1;33;40mla \e[1;34;40mPantalla \e[1;32;40mOLED \e[0m\n\r\v\e[0m");
+  pc_terminal.printf ("\t\e[1;31;40mPrueba \e[1;32;40mde \e[1;33;40mlos \e[1;34;40mDigitos \e[1;35;40mdel \e[1;37;44mDisplay\e[1;37;42m de \e[1;37;43m7 \e[1;37;41mSegmentos\e[0m");
+}
+ /*! @code
+** ===================================================================
+* @name
+*     Función     :  Scan_Display(int &Numero,char Tipo, char Modo, char PuntoDecimal)
+* @brief
+*     Descripción :
+*        Esta estructura hace el barrido de un display de 4 dígitos ya sea
+*        de ánodo común o cátodo común.
+* @param
+*     Parametros  :
+*        1.- Recibe un apuntador al Buffer donde se encuentra el valor a desplegar.
+*        2.- Recibe el tipo de dato a desplegar: 
+*          - "d" = cantidad numérica, (por omisión) 
+*          - "a" = cantidad en ASCII
+*          - "s" = cadena de caracteres
+*        3.- Nodo de despliege:
+*          - "0" = Modo Normal de 4 dígitos (por omisión)
+*          - "1" = Modo Parpadeo de los 4 dígitos 
+*          - "2" = Modo Parpadeo del punto decimal
+*          - "3" = Modo corrimiento a la izquierda
+*          - "4" = Modo corrimiento a la derecha
+*        4.- Parpadeo de los puntos decimales del Display de 7 segementos.
+*          - "0" = Sin puntos decimales
+*          - "1" = Puntos decimal en las Unidades
+*          - "2" = Puntos decimal en las Decenas
+*          - "3" = Puntos decimal en las Centenas
+*          - "4" = Puntos decimal en los Millarres
+* @retval 
+*     Retorna     : Nada
+** ===================================================================
+* @endcode
+*/
+void Scan_Display()                 // Barrido del Display de 7 Segemntos
+{
+char  modo=2;   // Display Mode: 0=Normal, 1=Blink, 2=Blink DP, 3= Shift Left, 4=Shift Right
+punto_decimal=3;
+  //============================================================================
+  //======================= BARRIDO DE LOS DÍGITOS =============================
+  //============================================================================
+  //............................................................................
+  // ...................... Display de Ánodo Común .............................
+  //............................................................................
+  #if DISPLAY_TYPE == 1
+    anodos = Digitos[4];    // Apaga todos los Digitos (Evita fantasmas)
+    catodos = Segmentos[Numeros[i]];  // Actualiza los segmentos
+//    if (i==4-punto_decimal) catodos=(Segmentos[i]& 0xFE); // Enciende el punto decimal
+//    if (i==4-punto_decimal) catodos=(Segmentos[Numeros[i]]& 0xFE); // Enciende el punto decimal
+    if (modo==0 && (i==4-punto_decimal)) catodos=(Segmentos[Numeros[i]]& 0xFE); // Enciende el punto decimal
+    anodos= Digitos[i];     // Activa el Digito en cuestión
+  //----------------------- Parpadeo de los Digitos ----------------------------
+      if ((modo==1 || modo==2) && blinking == 1)  anodos= Digitos[4];       // Apaga todos los Digitos  
+  //----------------------- Parpadeo de los Puntos -----------------------------
+      if (modo==2)          // Si estamos en modo Parpadeo de los puntos:
+      {
+        if (blinking && (i==4-punto_decimal)) catodos=(Segmentos[Numeros[i]]& 0xFE); // Enciende el punto decimal
+//        if ( blinking && i==2) punto_decimal=2;  // Activa los puntos del Reloj (para LTC-5650) 
+//        if (!Blinking && meridiano==TRUE) punto_decimal=1; // Activa punto externo para indicar PM           
+//        if ( blinking) punto_decimal=3;  // Activa los puntos del Reloj
+        if (!blinking) punto_decimal=0;  // Desactiva los puntos del Reloj
+        if (i==4-punto_decimal) catodos=(Segmentos[Numeros[i]]& 0xFE); // Enciende el punto decimal
+        anodos= Digitos[i];                 // Activa el Digito en cuestión
+      }  
+  #endif
+  //............................................................................
+  // ...................... Display de Cátodo Común ............................
+  //............................................................................
+  #if DISPLAY_TYPE == 0
+      anodos= ~(Digitos[4]);// Apaga todos los Digitos (Evita fantasmas)
+      catodos= ~(Segmentos[Numeros[i]]);    // Actualiza los segmentos
+      if (i==4-punto_decimal) catodos=~(Segmentos[Numeros[i]]& 0xFE); // Enciende el punto decimal
+      anodos= ~(Digitos[i]);                // Activa el Digito en cuestión
+  //----------------------- Parpadeo de los Digitos ----------------------------
+      if ((modo==1 || modo==2) && blinking == 1)  anodos= ~Digitos[4];       // Apaga todos los Digitos
+  //----------------------- Parpadeo de los Puntos -----------------------------
+      if (modo==2)          // Si estamos en modo Parpadeo de los puntos:
+      {
+        if (blinking && (i==4-punto_decimal)) catodos~=(Segmentos[Numeros[i]]& 0xFE); // Enciende el punto decimal
+//        if ( blinking) punto_decimal=3;  // Activa los puntos del Reloj
+//        if ( blinking && i==2) punto_decimal=2;  // Activa los puntos del Reloj (para LTC-5650)      
+        if (!blinking) punto_decimal=0;  // Desactiva los puntos del Reloj
+//        if ( meridiano==TRUE&&!Blinking) punto_decimal=1; // Activa punto externo para indicar PM en el Reloj
+        if (i==4-punto_decimal) catodos=~(Segmentos[Numeros[i]]& 0xFE); // Enciende el punto decimal
+        anodos= ~(Digitos[i]);  // Correspondiente al Digito en cuestión
+      }
+  #endif
+  //............................................................................
+  //....................... Corrimiento de los Dígitos .........................
+  //............................................................................
+
+    if (modo==3 || modo==4)
+        Numeros[i]=Cadena[i+shift_count]; // Copia 4 caracteres al buffer de despliegue
+    {    
+  //----------------------- Corrimiento de los Digitos a la Izquierda ----------
+      if (modo==3 && shift_flag == TRUE)             //Está en modo 3? (corrimiento de mensaje a la Izquierda)
+      {
+        shift_count++;      // Incrementa el corrimiento al siguiente conjunto de de caracteres
+        if (shift_count >= string_size) shift_count=0;   // Restablece el contador de caractres
+        shift_flag=FALSE;   // restablece la bandera para corrimientos
+
+      }  //---------------- Corrimiento de los Digitos a la Derecha ------------
+      if (modo==4 && shift_flag == TRUE)             // Está en modo 4? (corrimiento de mensaje a la Derecha)
+      {
+        if (shift_count == 0) shift_count=string_size;   // Restablece el contador de caractres
+        shift_count--;      // Incrementa el corrimiento al siguiente conjunto de de caracteres
+        shift_flag=FALSE;   // restablece la bandera para corrimientos
+      }
+    }
+  //----------------------- Actualiza Indices ----------------------------------
+      i++;                  // Apunta al siguiente dígito
+      if (i==4)             // Es el últino dígito?
+      {
+        i=0;                // Reinicia el Barriodo
+      }
+  }
+
+/*
+|--------------------------------------------------
+|    Función I2C_Scanner()
+|--------------------------------------------------
+*/
+void I2C_Scanner()
+{
+#if LCD_TYPE == 1                       // Definición para pines del LCD con interfaz I2C
+    pc_terminal.printf ("I2C scanner. Scanning ...");
+    uint8_t count = 0;
+    char     data;
+    char     test[] = {0x55,0xAA,0x0F,0xF0,0xFF,0x00};    // Patrón de Prueba
+    i2c_lcd.frequency(100000);          // Frecuencia de operación para el I2C (100KHz)
+    i2c_lcd.start();                    // Inicio de operación para el I2C  
+    for (int i = 8; i < 128; i++) {
+        uint8_t acknoledge = i2c_lcd.write (i,test,6,1);    //(dirección, ap_datos, N°_datos, repetición)
+//    uint8_t acknoledge = i2c_lcd.write (i,test,6);      //(dirección, ap_datos, N°_datos, repetición)
+        if (acknoledge == 0) {
+            pc_terminal.printf ("\n\rFound address: ");
+            pc_terminal.printf ("%u DEC",i);             // Valor de la dirección en Decimal
+            pc_terminal.printf (" (0x%x HEX)\n\r",i);    // Valor de la dirección en Hexadecimal
+            data = i2c_lcd.read (i);    //(dirección, ap_datos, N°_datos, repetición)
+            pc_terminal.printf ("Data: (0x%hd HEX)\n\r",data);  // Valor de la dirección en Hexadecimal
+            count++;
+
+            wait (1);  // maybe unneeded?
+        } // end of good response
+        led_monitor = !led_monitor;     // Parapadeo del LED
+    } // end of for loop
+    led_monitor = 1;                    // Apaga el LED
+    i2c_lcd.stop();                     // Fin de operación para el I2C
+    pc_terminal.printf ("\n\rDone.\n\r");
+    pc_terminal.printf ("Found %d Device(s)\n\r",count);
+#endif
+}  // end of setup
+/*
+|-------------------------------------------------------------------------------
+|     Función     :     Test_LCD()
+|      
+|     Descripción :     Rutina para inicialización del LCD y funciones 
+|                       de la Bluepill
+|
+|     Parámetros  :     Ninguno
+|          
+|     Retorna     :     Nada
+|-------------------------------------------------------------------------------
+*/
+void Test_LCD()
+{
+// ................ Limpia e inicializa la Pantalla LCD ........................ 
+  lcd.cls();                            // Limpia la Pantalla LCD
+  lcd.setCursor(TextLCD::CurOff_BlkOff);// Apaga el Cursor y Apaga el Parpadeo
+  lcd.setBacklight(TextLCD::LightOn);   // Enciende la Luz de Fondo
+  lcd.locate(0,0);                      // Ubica al inicio de la Primera Línea
+  lcd.printf("LINEA 1         ");       // Prueba de Renglon 1
+  lcd.locate(0,1);                      // Ubica al inicio de la Segunda Línea
+  lcd.printf("LINEA 2         ");       // Prueba de Renglon 2
+  lcd.locate(0,2);                      // Ubica al inicio de la Tercera Línea
+  lcd.printf("LINEA 3         ");       // Prueba de Renglon 3
+  lcd.locate(0,3);                      // Ubica al inicio de la Cuarta Línea
+  lcd.printf("LINEA 4         ");       // Prueba de Renglon 4
+ wait(2);                               // Espera 2 segundos
+  lcd.locate(0,0);                      // Ubica al inicio de la Pantalla LCD
+  lcd.printf("      COLUMNAS      ");   // Prueba de las Columnas
+  lcd.locate(0,1);                      // Ubica al inicio de la Tercera Línea
+  lcd.printf("         11111111112");   // Prueba de Columnas
+  lcd.printf("12345678901234567890");   // 
+  lcd.printf("  Col=%d   Ren=%d", lcd.columns(), lcd.rows());  
+  lcd.locate(20,3);                     // Ubica al final de la Pantalla LCD
+  lcd.setCursor(TextLCD::CurOff_BlkOff); // Apaga el Cursor
+  lcd.locate(0,0);                      // Ubica al inicio de la Pantalla LCD
+  wait(2);                              // Espera 2 segundos
+// ................ La Pantalla LCD Saluda al Mundo ............................   
+  lcd.cls();                            // Limpia la Pantalla 
+//  lcd ->_setBL;                         // Enciende la Luz de Fondo 
+//  lcd.setBacklight(LightOn);            // Enciende la Luz de Fondo 
+    lcd.setBacklight(TextLCD::LightOn);   // Enciende la Iluminación de Fondo
+    lcd.setCursor(TextLCD::CurOff_BlkOff);// Apaga el Cursor y Apaga el Parpadeo
+    lcd.cls();                          // Limpia la Pantalla LCD
+    lcd.printf("Hello World!\n");       // El LCD saluda al Mundo!
+    lcd.setInvert(ON);
+    lcd.printf("Hola Mundo!\n");        // El LCD saluda al Mundo!
+    lcd.setInvert(OFF);
+    lcd.printf("Ciao Mondo!\n");        // El LCD saluda al Mundo!
+    lcd.setInvert(ON);
+    lcd.printf("Bonjour le Monde");     // El LCD saluda al Mundo!
+    lcd.setInvert(OFF);
+    wait(1);                            // Espera 1 segundo
+// ................ Prueba de la Pantalla LCD ..................................  
+    lcd.cls();                          // Limpia la Pantalla
+    lcd.setCursor(TextLCD::CurOff_BlkOff);// Apaga el Cursor y Apaga el Parpadeo
+    pc_terminal.printf("TextLCD Enhanced Test. Columns=%d, Rows=%d\n\r", lcd.columns(), lcd.rows());
+    Timer Elpased_Time;                 // Inicializa el Tiempo a Transcurrir
+    Elpased_Time.start();               // Comienza a contar el tiempo transcurrido
+    for (int row=0; row<lcd.rows(); row++) {
+        int col=0;
+        pc_terminal.printf("MemAddr(Col=%d, Row=%d)=0x%02X\n\r", col, row, lcd.getAddress(col, row));
+//    lcd.putc('-');
+//        spi_lcd.lock();                 // Adquiere acceso exclusivo a este bus SPI.
+        lcd.putc('0' + row);            // Enumera los renglones
+//        spi_lcd.unlock();               // Libera el acceso exclusivo a este bus SPI.
+        for (col=1; col<lcd.columns()-1; col++) {
+//            spi_lcd.lock();             // Adquiere acceso exclusivo a este bus SPI.
+            lcd.putc('*');              // Llena la línea con el caracter "*"
+//            spi_lcd.unlock();           // Libera el acceso exclusivo a este bus SPI.
+        }
+        pc_terminal.printf("MemAddr(Col=%d, Row=%d)=0x%02X\n\r", col, row, lcd.getAddress(col, row));
+//        spi_lcd.lock();                 // Adquiere acceso exclusivo a este bus SPI.
+        lcd.putc('+');                  // Al final de la línea agrega el "+"
+//        spi_lcd.unlock();               // Libera el acceso exclusivo a este bus SPI.
+    }
+    Elpased_Time.stop();                // Detiene el Contador de Ticks
+    lcd.setCursor(TextLCD::CurOn_BlkOn);// Cursor Encendido, Parpadeo Encendido
+    pc_terminal.printf("All my hard work took %f sec\r\n", Elpased_Time.read()); // Calcula el tiempo transcurrido
+    wait(1);                            // Espera por 1 segundo
+    pc_terminal.printf("LCD Display and TextLCD Enhanced Test Completed.\n\r");
+    wait(1);                            // Espera 1 segundo
+    lcd.cls();                          // Limpia la Pantalla
+//  lcd.setBacklight(TextLCD::LightOff);  // Apaga la Iluminación de Fondo
+    lcd.setCursor(TextLCD::CurOn_BlkOff);// Apaga el Cursor y Enciende el Parpadeo
+// ................ Caracteres definidos por el Usuario ........................  
+// Set and show user defined characters. A maximum of 8 UDCs are supported by the HD44780.
+// They are defined by a 5x7 bitpattern.
+    lcd.setUDC(0, (char *) udc_0);      // Selecciona el caracter para el cursor |>
+    lcd.putc(0);                        // Lo imprime en la Pantalla LCD
+// ................ Enciende el Parpadeo del Cusor de la Pantalla LCD ....................... 
+    lcd.setCursor(TextLCD::CurOn_BlkOn);// Enciende el Cursor y el Parpadeo
+    lcd.printf(" LCD Ready... ");       // El LCD está listo para usarse
+    wait(1);                            // Espera 1 segundo
+// ................ Apaga el Cursor de la Pantalla LCD ........................... 
+     lcd.setCursor(TextLCD::CurOff_BlkOff);// Apaga el Cursor y Apaga el Parpadeo
+                                        // CurOff_BlkOff = 0x00,  /**<  Cursor Off, Blinking Char Off */
+                                        // CurOn_BlkOff  = 0x02,  /**<  Cursor On, Blinking Char Off */    
+                                        // CurOff_BlkOn  = 0x01,  /**<  Cursor Off, Blinking Char On */    
+                                        // CurOn_BlkOn   = 0x03   /**<  Cursor On, Blinking Char On */
+   pc_terminal.printf("LCD Starting OK! ... \n\r");
+}
+
+/*
+|--------------------------------------------------
+|    Función LCD_Update()
+|--------------------------------------------------
+*/
+void LCD_Update()                       // Actualiza los datos en la LCD
+{
+    pc_terminal.printf ("\e[22;10HActualizando LCD!!!  \r"); // Notifica en la Terminal
+}
+/*! @code
+** ===================================================================
+**     Función     :  Despliega_LCD()
+**
+**     Componente  :  Cpu [STM32F103C8T6]
+**  @brief
+**     Descripción :
+**        Esta estructura actualiza los valores de Temperatura y Humedad
+**        en la pantalla LCD 
+* @param
+**     Parametros  : Ninguno
+* @retval
+**     Retorna     : Nada
+** ===================================================================
+*/
+void Despliega_LCD()
+{
+  lcd.locate(0,0);                      // Ubica cursor en Col, Ren
+  lcd.cls();                            // Limpia la Pantalla
+  lcd.printf("Temperatura: %.1f%cC\n",temperaturaC,223); // Temparatura del DHT
+  lcd.locate(0,1);                      // Ubica cursor en Col, Ren
+  lcd.printf("Humedad:     %.1f%%%\n",humedad);   // Humedad del DHT
+  lcd.locate(0,2);                      // Ubica cursor en Col, Ren
+  lcd.printf("Temp CPU:    %d.0%cC\n",temp_cpu,223); // Temperatura del CPU
+  lcd.locate(0,3);                      // Ubica cursor en Col, Ren
+  lcd.printf("Flashings:   %d\n",v_flashings); // Led Flasings Transcurridos
+//  pwm_bl = backlight.read();            // Actualiza el Led de Backlight del LCD
+  wait(0.5);
+}
+/*!
+** ===================================================================
+** @fn
+**     Función  :  Get_DHT (Lee el DHT)
+**
+**     Componente  :  Cpu [STM32F103C8T6]
+** @brief
+**     Descripción :
+**         Esta estructura recibe un dato serial proveniente del sensor
+**         de Temperatura y Humedad DHT. Verifica la conexión y recepción
+**         de la cadena de datos y proporciona su código de error.
+**         Adecua y formatea los datos y escala el valor para calcular la
+**         temperatura en grados Centigrados, Fahrenheit y Kelvin, lo 
+**         ajusta y prepara para ser utilizada por la estructura de despliege  
+**         del Display LCD y los muestra en la Terminal Serial.
+**
+** @param
+**    Parámetros  :     Ninguno
+** @return
+**    Retorna     :     Código de Error
+**     0 = ERROR_NONE
+**     1 = BUS_BUSY
+**     2 = ERROR_NOT_PRESENT
+**     3 = ERROR_ACK_TOO_LONG
+**     4 = ERROR_SYNC_TIMEOUT
+**     5 = ERROR_DATA_TIMEOUT
+**     6 = ERROR_CHECKSUM
+**     7 = ERROR_NO_PATIENCE
+**
+** 
+** ===================================================================
+*/
+void Get_DHT(void)
+{
+    float h,tc,tf,tk;
+    char error_code;
+    if (Refresh_DHT.read_ms() >= refresh_rate);      // Tiempo de estabilizacipon del DHT
+    {    
+      error_code=Dht.readData();          //Lee el Sensor de Humedad y Temperatura 
+      pc_terminal.printf("\n\r\e[14;10HReading DHT ... ");
+      if (error_code != 0) 
+      {
+        pc_terminal.printf("\r\e[25;10HError Reading DHT   ");           //No se puedo leer DHT
+        pc_terminal.printf("\r\n\tPlease Check Sensor !!! \n\r"); //Envia mensaje de error a la Terminal
+        switch (error_code)     // Dependiendo del error imprime su causa.
+        {  
+          case 0:
+            pc_terminal.printf("\r\nError: %c No hay Error !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+          case 1:
+            pc_terminal.printf("\r\nError: %c Bus Ocupado !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+          case 2:
+            pc_terminal.printf("\r\nError: %c Sensor No Presente !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+          case 3:
+            pc_terminal.printf("\r\nError: %c Tiempo de Reconocimiento muy largo !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+          case 4:
+            pc_terminal.printf("\r\nError: %c Tiempo de Espera de Sincronia Fallida !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+          case 5:
+            pc_terminal.printf("\r\nError: %c Tiempo de Espera de Datos Fallida !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+          case 6:
+            pc_terminal.printf("\r\nError: %c Error de Checksum !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+          case 7:
+            pc_terminal.printf("\r\nError: %c Sin Paciencia !!! \n\r",error_code); //Envia mensaje de error a la Terminal
+          break;
+        }
+        Refresh_DHT.reset();      // inicializa el reloj de lecturas
+      }
+      if (error_code != 0) 
+      {
+        pc_terminal.printf("\e[14;10H\e[7mReading DHT ... \e[0m\n\r");
+        h = Dht.ReadHumidity();           //Se lee la humedad
+        pc_terminal.printf("\e[15;10HHumedad Relativa: \t%.2f %%\n\r", h);
+        humedad=h;
+        tc = Dht.ReadTemperature(CELCIUS); //Se lee la temperatura: CELCIUS=0,FARENHEIT=1,KELVIN=2
+        temperaturaC=tc;
+        pc_terminal.printf("\e[16;10HTemperatura Celsius: \t%.2f \x0f8\e[0mC\n\r",tc);
+        tf = Dht.ReadTemperature(FARENHEIT); //Se lee la temperatura: CELCIUS=0,FARENHEIT=1,KELVIN=2
+        pc_terminal.printf("\e[17;10HTemperatura Farenheit:\t%.2f \x0f8\e[0mF\n\r",tf);
+        tk = Dht.ReadTemperature(KELVIN); //Se lee la temperatura: CELCIUS=0,FARENHEIT=1,KELVIN=2
+        pc_terminal.printf("\e[18;10HTemperatura Kelvin: \t%.2f \x0f8\e[0mK\n\r",tk);
+        punto_rocio=Dht.CalcdewPoint(Dht.ReadTemperature(CELCIUS),Dht.ReadHumidity());
+        pc_terminal.printf("\e[19;10HPunto de Roc\x0ad\e[0mo: \t%.2f \x0f8\e[0mC\r\n\v",punto_rocio);
+      } 
+    }
+    Refresh_DHT.start();      // inicializa el reloj de lecturas
+}
+/*
+** ===================================================================
+**     Función  :  Get_CPU_Temperature (Lee el ADC)
+**
+**     Componente  :  Cpu [STM32F103C8T6]
+**     Descripción :
+**         Esta estructura lee el Convertidor Analógico/Digital en 
+**         modo de 16 bits. Adecua y escala el valor para calcular 
+**         la temperatura en grados Celsius, los ajusta y los prepara 
+**         para ser utilizada por la estructura de despliege del
+**         Display de 7 segementos. 
+**          ADC_REFERENCE_VOLTAGE_MV is a bandgap voltage = 1210mV; 
+**          ADC_MAX_OUTPUT_VALUE = 4095; 
+**          TEMP_SENSOR_VOLTAGE_MV_AT_25 = 760mV; 
+**          TEMP_SENSOR_AVG_SLOPE_MV_PER_CELSIUS = 2.5mV/C; 
+**     Parametros  : Ninguno
+**     Retorna     : Nada
+** ===================================================================
+*/
+void Get_CPU_Temperature() 
+{
+//uint8_t residuo=millares=centenas=decenas=unidades=0;      
+//    resultado=temperatura.read_u16(); // el valor es un u int [0x0000-0xFFFF]
+    promedio=promedio+cpu_temp.read_u16()>>4; // conviete el valor a 12 bits [4096]
+    j++;
+    if (j>=32)
+    { 
+      resultado= promedio/32;
+      promedio=0;
+      j=0; 
+       temp_cpu = (resultado * 1500) /4095; // Ajuste del Vólmetro de 3.33V */      
+ //      temp_cpu=resultado;
+       pc_terminal.printf ("\r\e[20;10HTemperatura CPU: \t%2d.00 %cC\r\n",temp_cpu,248);
+       millares = temp_cpu / 1000;          
+       residuo  = temp_cpu % 1000;          
+       centenas = residuo / 100;
+       residuo  = residuo % 100;
+       decenas  = residuo / 10;
+       unidades = residuo % 10;
+       punto_decimal = 0;       //Posición del punto decimal: 0=sin punto, 1=unidades, 2=decenas, 3=centemas 4=millares
+     }
+/* -------------------------------------------------------------------
+**   Rutina de asignación de los dígitos al Display de 7 Segmentos
+** -------------------------------------------------------------------*/    
+    /* Corrección de Ceros a la derecha */ 
+    if (millares==0&&centenas==0&&decenas==0) decenas=36; //Apaga los segmentos del Digito [1]
+    if (millares==0&&centenas==0) centenas=36;            //Apaga los segmentos del Digito [2]
+    if (millares==0) millares=36;                         //Apaga los segmentos del Digito [3]
+/* -------------------------------------------------------------------
+**   Rutina para El Termómetro
+** -------------------------------------------------------------------*/            
+    /*Asignación de los dígitos a desplegar (Configuracion para el Termómetro) */
+    Numeros[3]=12;              // Tipo de Grados: "C":     Digito [1]
+    Numeros[2]=53;              // Símbolo de Grados:       Digito [2]
+    Numeros[1]=unidades;        // Unidades de Temperatura: Digito [3] 
+    Numeros[0]=decenas;         // Decenas de Temperatura:  Digito [4]      
+}
+/*
+|--------------------------------------------------
+|    Función Buzzer_Beep()
+|--------------------------------------------------
+*/
+void Buzzer_Beep()              // Software routine for Buzzer Beep
+{ 
+  pc_terminal.printf("Testing Buzzer... \n\r");
+  buzzer = BUZZ_ON;     // Largo
+  wait_ms(750);
+  buzzer = BUZZ_OFF;    // Espacio
+  wait_ms(125);
+  buzzer = BUZZ_ON;     // Corto
+  wait_ms(250);
+  buzzer = BUZZ_OFF;    // Espacio
+  wait_ms(125);
+  buzzer = BUZZ_ON;     // Corto
+  wait_ms(500);
+  buzzer = BUZZ_OFF;    // Espacio
+  pc_terminal.printf("Buzzer OK ! \n\r");
+}
+/*
+|--------------------------------------------------
+|    Función Buzzer_SetPeriodMode(Periodo, Estado)
+|--------------------------------------------------
+*/
+void Buzzer_SetPeriodMode(float Periodo,bool Estado)
+{
+    buzzer.period(Periodo);                     // Establece la Frecuencia
+    if (Estado==1)buzzer.pulsewidth(Periodo/2); // Encience el Buzzer (Dutty = 50%)
+    if (Estado==0)buzzer.pulsewidth(Periodo);   // Apaga el Buzzer
+}
+
+/*
+|--------------------------------------------------
+|    Función Blinking_Led()
+|--------------------------------------------------
+*/
+void Blinking_Led()             // Software Blinking routine for LED 
+{
+        // The on-board LED is connected, via a resistor, to +3.3V (not to GND). 
+        // So to turn the LED on or off we have to set it to 0 or 1 respectively
+//        pc_terminal.printf("\rEl Led ha parpadeado \e[1;33;40m%d\e[0m veces!  \r", rate_counter++);
+        led_monitor = !led_monitor; // Parapadeo del LED por Interrupción (LED Toggled)
+        if (led_monitor == FALSE) v_flashings++;               // Incremente el contador de parpadeos
+}
+/*
+|--------------------------------------------------
+|    Función Clear_Screen()
+|--------------------------------------------------
+*/
+void Clear_Screen() 
+{
+    // ANSI Terminal Commands
+    pc_terminal.printf("\x1B[2J");     // secuencia de Escape  \e[2J
+    pc_terminal.printf("\x1B[1;1H");   // secuencia de Escape  \e[1;1H
+}
+/* END Functions */                 
+/* END Routines */                   
+/* END program */
+
+
+/*! @brief
++*******************************************************************************
+*+                  D O C U M E N T A C I Ó N
++*******************************************************************************
+*+                  La documentación va aquí!:
+*+------------------------------------------------------------------------------
+*+        Sensor de Temperatura y Humedad DHT 11 y 22
+*+------------------------------------------------------------------------------
+*+
+*+                   _______________________
+*+                  /                       \
+*+                 /                         \
++*                /                           \
+*+               /                             \
+*+              |                               |
+*+              |                               |
+*+              |                               |
+*+              |                               |
+*+              |             DHT xx            |
+*+              |                               |
+*+              |                               |
+*+              |                               |
+*+              |                               |
+*+              |                               |
+*+              |                               |
+*+              |                               |
++*              |_______________________________|
+*+                   |1     |2     |3     |4
+*+                   |      |      |      | 
+*+                   |      |      |      |
+*+                   |      |      |      |
+*+                  Vcc    SDA     NC    GND
+*+
+*+
+*+  CARACTERISTICAS
+*+  Fuente de alimentación      3.3-5V DC
+*+  Señal de salida             Señal digital a través de bus único  
+++  Elemento sensor             Condensador de polímero
+*+  Rango de funcionamiento     Humedad 20-90% HR; Temperatura 0 ~ 50 Celsius
+*+  Precisión                   Humedad + -2% HR (Máx. +- 5% HR); Temperatura < +- 2Celsius
+*+  Resolución o sensibilidad   Humedad 1% HR; Temperatura 1 Celsius
+*+  Repetibilidad               Humedad 1% HR; Temperatura 1 Celsius
+*+  Período de detección        Promedio:  6s
+*+  Intercambiabilidad          totalmente intercambiable
+*+  Dimensiones                 tamaño pequeño  12 * 15 * 5.5 mm
+*+
+*+  ESPECIFICACIONES DE FUNCIONAMIENTO
+*+  (1) Alimentación y pines
+*+   El voltaje de la alimentación debe ser de 3,3 a 6 V CC. Cuando se suministra 
+*+   energía al sensor, no envíe ninguna instrucción al sensor dentro de un segundo
+*+   para pasar el estado inestable. Se puede agregar un capacitor valorado en 
+*+   100nF entre VDD y GND para filtrado de ondas
+*+
+*+  (2) Comunicación y señal
+*+   Los datos de un solo bus se utilizan para la comunicación entre MCU y DHT22,
+*+   toma 5 mS por una sola vez comunicación.
+*+   Los datos se componen de parte integral y decimal, la siguiente es la 
+*+   fórmula para datos.
+*+
+*+   DHT22 envía un bit de datos más alto en primer lugar!
+*+ 
+*+   DATOS=datos RH integrales de 8 bits+datos RH decimales de 8 bits+datos T integrales de 8 bits+datos T decimales de 8 bits+suma de verificación de 8 bits
+*+
+*+  Si la transmisión de datos es correcta, la suma de verificación debe ser los 
+*+  últimos 8 bits de "datos RH integrales de 8 bits + RH decimal de 8 bits datos
+*+  +datos T integrales de 8 bits+datos T decimales de 8 bits".
+*+  Cuando MCU envía señal de inicio, DHT22 cambia de modo de bajo consumo de 
+*+  energía a modo de funcionamiento. cuando el MCU termina de enviar la señal 
+*+  de inicio, el DHT22 enviará una señal de respuesta de datos de 40 bits que 
+*+  reflejan la humedad relativa
+*+
+*+------------------------------------------------------------------------------
+*+        Sensor de Temperatura LM35
+*+------------------------------------------------------------------------------
+*+
+*+                   _______________
+*+                  /               \
+*+                 /                 \
++*                /                   \
+*+               /                     \
+*+              |         LM35          |
+*+              |                       |
++*              |_______________________|
+*+                   |1     |2     |3
+*+                   |      |      | 
+*+                   |      |      |
+*+                   |      |      |
+*+                  Vcc    Vout   GND
+*+
+*+  CARACTERÍSTICAS
+*+  Sus características más relevantes son:
+*+  El sensor tiene un rango desde −55°C a 150°C.
+*+  Precisión en el rango de -10°C hasta +85°C: ±0.5°C
+*+  Está calibrado directamente en grados Celsius.
+*+  Voltaje de Operación: 4 a 30 V (5V Recomendado).
+*+  La tensión de salida es proporcional a la temperatura.
+*+  Pendiente: 10mV/ºC.
+*+  Tiene una precisión garantizada de 0.5 °C a 25 °C.
+*+  Baja impedancia de salida.
+*+  No necesita componentes adicionales
+*+  Baja corriente de alimentación (60 μA).
+*+  Peso: 0.24 g
+*+  Bajo costo.
+*+
+*+------------------------------------------------------------------------------
+*+        Display Cuadruple 7 Segementos Ánodo Común
+*+------------------------------------------------------------------------------
+*+
++*
+*+
+*+                            12 11 10  9  8  7
+*+                             |  |  |  |  |  |
+*+                             |  |  |  |  |  |
+*+               --------------------------------------------------
+*+              |              A  a  f  A  A  b                    |
+*+              |              4        3  2                       |
+*+              |  ______________________________________________  |
+*+              | |       ____      ____      _____     _____    | |
+*+              | |     /     /   /     /    /     /   /     /   | |
+*+              | |    /____ /   /____ / .  /____ /   /____ /    | |
+*+              | |   /     /   /     / .  /     /   /     /     | |
+*+              | |  /____ /.  /_____/ .  /____ /.  /____ /.     | |
+*+              | |                                              | |
+*+              | |______________________________________________| |
+*+              |                                                  |
+*+              |                              A                   |
+*+              |               e  d  p  c  g  1                   |
+*+               --------------------------------------------------
+*+                              |  |  |  |  |  |
+*+                              |  |  |  |  |  |
+*+                              1  2  3  4  5  6
+*+
+*+                              Display: FYQ-2841BH
+*+                                       KEM-3641BB
+*+                                       KEM-3942BB
+*+                                       HSN-5642BS
+*+
+*+
+*+                      PB_15 PB_14 PB_13 PB_12 
+*+                        A4    A3    A2    A1
+*+                       Mill  Cent  Dec   Uni
+*+ 
+*+     STM32-F103C8      PB_4 PB_3 PA_15 PA_12   PA_11 PA_10 PA_9  PA_8
+*+                         g    f    a     b       c     d     e     p
+*+                       
+*+                       Segemntos Superiores     Segmentos Inferiores       
+*+
+*+ Nota: Los segmentos llevan todos una Resistencia en Serie (330~2.2K) entre
+*+       el pin del STM32F103C8T6 y el pin del segmento correspondiente 
+*+       Los Ánodos se abastecen de corriente a traves del CD4041
+*+
+*+-----------------------------------------------------------------------------
+*+        CD4041   Quad True/Complement Buffer
+*+------------------------------------------------------------------------------
+*+
+*+             |\    1
+*+             | \-------  A1
+*+          3  |  \
+*+ PB_12  -----|   >
+*+             |  /  2
+*+             | /o------ COL4
+*+             |/
+*+
+*+
+*+             |\    11
+*+             | \-------  A2
+*+          13 |  \
+*+ PB_13  -----|   >
+*+             |  /  12
+*+             | /o------ COL3
+*+             |/
+*+
+*+
+*+             |\    4
+*+             | \-------  A3
+*+          6  |  \
+*+ PB_14  -----|   >
+*+             |  /  5
+*+             | /o------ COL2
+*+             |/
+*+
+*+
+*+
+*+             |\    8
+*+             | \-------  A4
+*+          10 |  \
+*+ PB_15  -----|   >
+*+             |  /  9
+*+             | /o------ COL1
+*+             |/
+*+
+*+
+*+------------------------------------------------------------------------------
+*+        SN74HC573   3-STATE Octal D-Type Transparent Latch
+*+------------------------------------------------------------------------------
+*+
+*+                  Vcc
+*+                   O
+*+                   |
+*+                   | 20
+*+              _____|_____
+*+           2 |           | 19
+*+ PA_8   -----| D1     Q1 |----- LED1
+*+             |           | 
+*+           3 |           | 18
+*+ PA_9   -----| D2     Q2 |----- LED2                   Truth Table
+*+             |           | 
+*+           4 |           | 17                 Output  Latch   Data    Output
+*+ PA_10  -----| D3     Q3 |----- LED3          Control Enable
+*+             |           |                       L      H       H       H
+*+           5 |           | 16                    L      H       L       L
+*+ PA_11  -----| D4     Q4 |----- LED4             L      L       X       Q0
+*+             |           |                       H      X       X       Z
+*+           6 |           | 15
+*+ PA_12  -----| D5     Q5 |----- LED5
+*+             |           |
+*+           7 |           | 14
+*+ PB_15  -----| D6     Q6 |----- LED6
+*+             |           |
+*+           8 |           | 13
+*+ PB_3   -----| D7     Q7 |----- LED7
+*+             |           |
+*+           9 |           | 12
+*+ PB_4   -----| D8     Q8 |----- LED8
+*+             |           |
+*+          11 |        __ | 1
+*+ PA_5   -----| LE     OE |------
+*+             |___________|     |
+*+                   |           |
+*+                   |           |
+*+                 -----       -----
+*+                  ---         ---
+*+                   -           -
+*+
+*+------------------------------------------------------------------------------
+*+      Conexionado de los LEDS´s
+*+------------------------------------------------------------------------------
+*+  Los leds se pueden conectar a cualquier pin de Salida Q disponible del 
+*+  Latch 74HC573
+*+  El dispositivo puede drenar hasta 20ma por todas sus salidas a un voltaje de 
+*+  3.3V, pero se recomienda no exceder de 1mA por salida.
+*+  Esto se logra poniendo una resistencia limitadora de mínimo 330 Ohms.
+*+
+*+
+*+     Q1        Q2        Q3       Q4         Q5        Q6        Q7        Q8
+*+     O         O         O         O         O         O         O         O
+*+     |         |         |         |         |         |         |         |
+*+     |         |         |         |         |         |         |         |
+*+     /         /         /         /         /         /         /         /
+*+     \ 1K      \ 1K      \ 1K      \ 1K      \ 1K      \ 1K      \ 1K      \ 1K
+*+     /         /         /         /         /         /         /         /
+*+     \         \         \         \         \         \         \         \
+*+     |         |         |         |         |         |         |         |
+*+     |         |         |         |         |         |         |         |
+*+  ___|___   ___|___   ___|___   ___|___   ___|___   ___|___   ___|___   ___|___ 
+*+  \      /  \      /  \      /  \      /  \      /  \      /  \      /  \      /
+*+   \    /    \    /    \    /    \    /    \    /    \    /    \    /    \    /
+*+    \  /      \  /      \  /      \  /      \  /      \  /      \  /      \  / 
+*+   __\/__    __\/__    __\/__    __\/__    __\/__    __\/__    __\/__    __\/__
+*+     |         |         |         |         |         |         |         |
+*+     |         |         |         |         |         |         |         |
+*+     |         |         |         |         |         |         |         |
+*+     |_________|_________|_________|_________|_________|_________|_________|
+*+                                        |
+*+                                        |
+*+                                     ___|___
+*+                                      _____
+*+                                       ___
+*+                                        _
+*+
+*+                                       GND
+*+
+*+----------------------------------------------------------------------------*
+*+
+*+   Powered by
+*+
+*+          T H E     A N T U L I U ' S   T E A M   R&D  Unltd 
+*+
+*+  Research, Development, Systems, Equipment, Support & Spare Parts.
+*+  (C) Copyright 1989-2022, All Rights Reserved            
+*+
+*+  Welcome to The Beaners Proyect Community!                   
+*+----------------------------------------------------------------------------*/
+
+/* END documentation */ 
+
+/* END Mbed */ 

@@ -1,0 +1,1279 @@
+/*! ###########################################################################
+** @brief
+**    Archivo        : main.c
+**    Proyecto       : Bluepill_LCD_Test
+**    Procesador     : STM32F103C8
+**    Plataforma     : Blue Pill
+**    Herramienta    : Mbed Keil Studio Cloud
+**    Compilador     : Mbed Online C Compiler
+**    Version        : Keil Studio Cloud 1.6.16
+**    Fecha/Hora     : 18-12-2019, 11:48, # CodeGen: 0
+**    Descripción    :
+**         Este proyecto prueba todas las configuraciones para operar un
+**         display LCD alfanumérico en modo de 4 bits una pantalla LCD con interfaz Hitachi
+**         HD44780 con tres configuraciones de puertos (paralelo, SPI e I2C).
+**         - Utilizando los GPIO's
+**         - Utilizando el SPI y el C.I. SN74HC595 o CD4094
+**         - Utilizando el I2C y el Modulo PCF8574 y PCF8574A
+**         soporta las siguintes pantallas LCD alfanuméricas:
+**         8x1, 16x1, 20x1, 16x2, 20x2, 24x2, 32x2, 40x2, 16x4, 20x4
+**   Componentes     : GPIO, Timer, SPI, I2C, TextLCD.
+**   Configuraciones : TextLCD, TextLCD_SPI, TextLCD_I2C
+**   Autores         :
+**         ATEAM Development Group:
+**          - Antulio Morgado Valle
+**
+**   Versión        : Beta
+**   Revisión       : A
+**   Release        : 0
+**   Date           : 20/10/2023
+**   Bugs & Fixes   : 20/05/2020
+**                    Added LCD Menu, Beta version (with bugs)
+**                    Added SPI Button reading 
+**
+** El permiso se otorga por este medio, sin cargo, a cualquier persona que
+** obtenga una copia de este software y los archivos de documentación asociados
+** (el "Software"), para operar en el Software sin restricciones, incluidos,
+** entre otros, los derechos de uso, copia, modificación, fusión, publicación,
+** distribución, sublicencia y/o venta de copias de el Software, y para permitir
+** que las personas a quienes se suministra el Software lo hagan, sujeto a las
+** siguientes condiciones:
+**
+** El aviso de copyright anterior y este aviso de permiso se incluirán en todas
+** las copias o partes sustanciales del Software.
+**
+** EL SOFTWARE SE PROPORCIONA "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO, EXPRESO
+** O IMPLÍCITO, INCLUYENDO PERO NO LIMITADO A LAS GARANTÍAS DE COMERCIABILIDAD,
+** APTITUD PARA UN PROPÓSITO PARTICULAR Y NO INCUMPLIMIENTO. EN NINGÚN CASO,
+** LOS AUTORES O TITULARES DE DERECHOS DE AUTOR SERÁN RESPONSABLES POR CUALQUIER
+** RECLAMACIÓN, DAÑOS U OTRAS RESPONSABILIDADES, YA QUE SEA RESPONSABLE DE UN
+** CONTRATO, CORTE U OTRA MANERA, DERIVADOS DE, FUERA O EN CONEXIÓN CON
+** EL SOFTWARE O EL USO O OTRAS REPARACIONES EN EL SOFTWARE.
+** ###########################################################################*/
+/*
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+:  Includes
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+*/
+#include "stm32f103c8t6.h"
+#include "mbed.h"
+#include "TextLCD.h"
+#include "TextLCD_Config.h"
+#include "TextLCD_UDC.h"
+#include "I2C.h"
+#include "SPI.h"
+#include "Serial.h"
+//#include "stm32f10x_i2c.h"
+//#include "Led_RGB.h"
+//#include "Escalas.h"
+#include <stdio.h>
+#include <cstdint>
+/*
+:...............................................................................
+:  Definiciones
+:...............................................................................
+*/
+#define LED_ON          0           // Estado para el Led Encendido
+#define LED_OFF         1           // Estado para el Led Apagado
+#define BUZZ_ON         1           // Estado para Buzzer Encendido
+#define BUZZ_OFF        0           // Estado para Buzzer Apagado
+#define ON              0           // Estado para boton presionado
+#define OFF             1           // Estado para boton sin presionar
+#define HOLD            2           // Estado para boton mantenido
+#define RELEASE         3           // Estado para boton liberado
+#define REPEAT          4           // Estado para boton repetido
+#define FALSE           0           // Estado FALSO
+#define TRUE            1           // Estado VERDADERO
+#define TICKER_RATE     1000        // Periodo de interrupción Ticker (us)
+#define LCD_INTERFACE   1           // Tipo Interfaz del LCD: 0=Normal, 1=I2C, 2=SPI
+#define I2C_ADDRESS     0x4E        // Dirección I2C para Interfaz al LCD: 0x7E, 0x4E, 
+#define LCD_SIZE        LCD20x4     // Tipo de HD44780, LCD20x4,  LCD16x4,  LCD16x2,  
+#define LCD_Filas       4           // Número de Renglones del LCD
+#define LCD_Columnas    20          // Número de Caracteres x Renglón del LCD
+#define BAUD_RATE       115200      // Velocidad de Transmisión (Bauds)
+                                    // Velocidades Permitidas:
+                                    // 300, 600, 1200, 2400, 4800, 9600,
+                                    // 14400, 19200, 28800, 38400, 57600
+                                    // 115200, 230400, 460800, 921600
+
+/*
++-------------------------------------------------------------------------------
+|  Configuración de Puertos
++-------------------------------------------------------------------------------
+*/
+Ticker      timer_int;              // Inicializa la Interrupción por Timer
+DigitalOut  led_monitor(Green_Led); // Inicializa el LED Monitor
+PwmOut      buzzer (PB_0);          // Inicializa el Buzzer Piezo Eléctrico
+AnalogIn    sensor1 (PA_0);         // Inicializa Canal Analógico para sensor 1
+
+/*
+** -------------------------------------------------------------------
+**    Inicialización de los Pines de Funciones Especiales.
+** -------------------------------------------------------------------
+*/
+// Host PC Communication channels
+/*************************************************
+* Initialize the Serial Terminal to PC
+***************************************************/
+//Serial      terminal(USBTX, USBRX);   // Tx, Rx   (USB)
+//Serial      terminal(PA_9, PA_10);    // Tx, Rx Using MAX3232 or BlueTooth (UART1)
+Serial      terminal(PA_2,PA_3);        // Terminal Serial (TTL Level) (Tx, Rx) (UART2)
+
+/*************************************************
+* Initialize the Serial Terminal for Bluetooth Communication support
+***************************************************/
+//Serial   bluetooth(PB_10, PB_11);       // Tx, Rx (UART3)
+
+/*************************************************
+* Initialize the CAN Port 
+***************************************************/
+// CAN Communication
+//CAN         can_lcd(PB_7,PB_6);       // Rd, Td
+
+/************************************************* 
+* I2C Communication
+************************************************** 
+* Initialize the library with the numbers of the interface pins
+* Board Blue Pill STM32F103C8T6
+* IDE  Mbed On Line Compiler
+*           I2C         PCF8574A
+* Pin       Board       Module
+* (PB_10)   I2C2_SCL    SCL   (yellow) + resistance pull-up 4.7k
+* (PB_11)   I2C2_SDA    SDA   (orange) + resistance pull-up 4.7k
+* 3.3V      3.3V        3.3V  (red)
+* GND       GND         GND   (brown)
+***************************************************/
+//I2C      i2c(PB_11,PB_10);        // SDA, SCL (I2C2)
+
+/*************************************************
+* SPI Communication
+**************************************************
+* Initialize the library with the numbers of the interface pins
+* Board Blue Pill STM32F103C8T6
+* IDE  Mbed On Line Compiler
+*           SPI             SN74HC595
+* Pin       Board           I.C.            
+*(PA_7)     SPI1_MOSI       SER   (blue)    
+*(PA_6)     SPI1_MISO       none   
+*(PA_5)     SPI1_CLK        SRCLK (white)
+*(PA_4)     SPI1_NSS1       RCLK  (Yellow) 
+* 3.3V      3.3V            3.3V  (red)
+* GND       GND             GND   (black)
+***************************************************/
+//SPI         spi(PA_7,PA_6,PA_5,PA_4);   // SPI_MOSI, SPI_MISO, SPI_SCK, SPI_CS
+
+/*
+******************************************************************************
+*                   LCD Instantiation 
+* Instantiation for creating a TextLCD interface 
+* for using control and functions over selected port 
+*------------------------------------------------------------------------------
+*   El LCD puede trabajar con 3 configuraciones de la Interfaz
+*   Tipo Interfaz del LCD: 
+*   0 = Normal      4bit bus: (RS, E, D4-D7, BL+)
+*   1 = I2C         I2C  bus: (SDA, SCL)
+*   2 = SPI         SPI  bus: (MOSI, MISO, SCLK, SS)
+*******************************************************************************
+*/
+#if LCD_INTERFACE == 0
+TextLCD     lcd(PA_10,PA_11,PA_12,PA_15,PB_3,PB_4, TextLCD::LCD_SIZE);   // 4bit bus: rs,rw,e,bl, d4-d7  (lsb -> msb)
+AnalogIn    light (PA_7);           // Inicializa Canal Analógico para BackLight
+PwmOut      bkl(PA_8);              // Inicializa el PWM para BackLight
+DigitalOut  LE(PB_5);               // Pin para Latch Enable (SN74HC573)
+#endif
+#if LCD_INTERFACE == 1
+I2C         i2c_lcd(PB_11,PB_10);                   // SDA, SCL
+TextLCD_I2C lcd(&i2c_lcd, I2C_ADDRESS, TextLCD::LCD_SIZE);  // Address 0x4E or 0x7E I2C bus, PCF8574A Arduino Shield, LCD Type
+#endif
+#if LCD_INTERFACE == 2
+SPI         spi_lcd(PA_7,PA_6,PA_5,PA_4);           // MOSI, MISO, SCLK, SS
+DigitalOut  SSel(PA_4);                             // Inicializa el Pin de Seleccion de Esclavo SPI
+TextLCD_SPI lcd(&spi_lcd, PA_4, TextLCD::LCD_SIZE, TextLCD::HD44780);    // SPI bus, SN74595 expander, CS pin, LCD Type 
+#endif
+/*
+#===============================================================================
+|
+|                           A R E A   D E   D A T O S
+|
+#===============================================================================
+*/
+/*
++-------------------------------------------------------------------------------
+|  Variables Globales de Usuario
++-------------------------------------------------------------------------------
+*/
+uint16_t Rate=TICKER_RATE/2;        // Velocidad de barrido (500us = 0.5ms)
+uint16_t counter=250;               // Cuenta inicial de 250us
+int16_t  N_Interrupciones;          // Contador de Overrunig
+int16_t  heartbeat;                 // Contador de Parpadeos
+uint8_t  botones;                   // Codificación del valor de los botones
+/*
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+|  Definición de Funciones Prototipo y Rutinas de los Vectores de Interrupción
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+*/
+        // Las Definiciones de Funciones Prototipo 
+        // y Apuntadores a Vectores de Interrupciones van aquí !
+void TimerInt_OnInterrupt(void);
+void Setup(void);
+void Init_Interfaces(void);
+void I2C_Scanner(void);
+void Test_LCD(void);
+void Caratula(void);
+void Buzzer_Beep(void);
+void Blinking_Led(void);
+void Clear_Screen(void);
+void Buzzer_SetPeriodMode(float Periodo,bool Estado); 
+/* END prototypes */
+
+/* END definitions */
+
+/*
+#===============================================================================
+|
+|               P R O G R A M A     P R I N C I P A L
+|
+#===============================================================================
+*/
+int main()
+{                           // Inicialización de variables, puertos e interrupciones
+//=================== Secuencia  Principal =====================================
+
+  /*** Bluepill internal initialization. DON'T REMOVE THIS CODE!!! ***/
+    Setup();                    // Inicializa el Hardware
+  /*** End of Bluepill internal initialization.                    ***/
+    Caratula();                 // Despliega la caratula de Bienvenida
+    lcd.cls();                  // Limpia la Pantalla LCD
+    lcd.setBacklight(TextLCD::LightOn);  // Enciende la Iluminación de Fondo del LCD
+//=================== Lazo Principal ===========================================
+  while (true)
+  {
+        lcd.cls();                              // Limpia la Pantalla del LCD
+        lcd.locate(0,0);                  
+        lcd.printf("Bienvenidos Sean");         // El LCD saluda al Mundo
+        lcd.printf("    a la \n");              // y a la          
+        lcd.printf("Gloriosa ESIME !\n");       // Gloriosa ESIME ! 
+        lcd.locate(0,4);                  
+        lcd.printf("Flashings: %d",heartbeat);  // Led Flasings Transcurridos
+        wait(0.5);                              // Espera medio segundo
+ #if LCD_INTERFACE == 2    /* LCD Utilizando el SPI */
+        botones=spi_lcd.write(NULL);            // Lee la Botonera
+        terminal.printf("Botones: %d  ",botones);   // Imprime el Valor de los botones
+        if (botones != 0 )                      // Si se presionó algún botón
+        {
+            lcd.locate(0,4);                    // Línea 4 del LCD
+            lcd.printf("Valor del Boton: %d",botones);  // Imprime el peso del botón oprimido
+            wait (2);                           // Espera 2 segundos
+        }
+#endif
+  }
+}
+/* END main */
+
+/*
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+::
+::              V E C T O R E S    D E    I N T E R R U P C I Ó N
+::                      (Rutinas de Atención)
+::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+*/
+                // Las Rutinas de Atención a Interrupciones van aquí !
+/** ###################################################################
+** @brief
+**    Evento       : TimerInt_OnInterrupt()
+**    Proyecto     : STM32F103C8_Test_LCD
+**    Procesador   : STM32F103C8T6
+**    Herramienta  : Mbed
+**    Compilador   : Mbed Online C Compiler
+**    Version      : Mbed-OS 5.15.0
+**    Compiler     : GNU C Compiler
+**    Date/Time    : 18-12-2019, 11:48, # CodeGen: 0
+**    Abstract     :
+**         This is user's event module.
+**         Put your event handler code here.
+**    Settings    :
+**    Contents    :
+**         Cpu_OnNMIINT - void Cpu_OnNMIINT(void);
+**
+** ###################################################################*/
+void TimerInt_OnInterrupt()           // Rutina de Atención al Ticker
+{
+    counter--;                          // Aquí va la Rutina de Servicio !
+    if (!counter) 
+    {
+        N_Interrupciones++;             // Incrementa el contador 
+        terminal.printf("Counter Finish! %d Times \r",N_Interrupciones);
+        led_monitor = !led_monitor;     // Parapadeo del LED por Interrupción (Toggle the LED)
+        if (!led_monitor)heartbeat++;   // Incrementa el contador de Parpadeos
+        counter = Rate;                 // Restablece el contador
+    }
+}
+/* END Events */
+/*
+ ______________________________________________________________________________
+/______________________________________________________________________________\
+|                                                                              |
+|                   F U N C I O N E S     P R O T O T I P O                    |
+|______________________________________________________________________________|
+ \_____________________________________________________________________________/
+*/
+                // Las Funciones Prototipo van aquí !
+/*!
+*-----------------------------------------------------------------------
+* 
+*     Función     :     Caratula()
+* @brief 
+*     Descripción :     Imprime la carátula de bienvenida en la terminal Serial
+* @param
+*     Parámetros  :     Ninguno
+* @return      
+*     Retorna     :     Nada
+*-----------------------------------------------------------------------
+*/
+void Caratula()
+{
+  terminal.printf ("\t\e[1;37;41mInstituto Politecnico Nacional\e[0m\n\r");
+  terminal.printf ("\e[1;37;42mESCUELA SUPERIOR DE INGENIERIA MECANICA Y ELECTRICA\e[0m\n\r\v");
+  terminal.printf ("\t\e[1;31;40mPrueba \e[1;35;40mde \e[1;33;40mla \e[1;34;40mPantalla \e[1;32;40mLCD \e[0m\n\r\v\v\e[0m");
+}
+/**
+*-------------------------------------------------------------------------------
+* @brief 
+*     Función     :     Setup()
+*
+*     Descripción :     Rutina para inicialización de los puertos y funciones 
+*                       de la Bluepill
+* @param
+*     Parámetros  :     Ninguno
+* @return
+*     Retorna     :     Nada
+*-----------------------------------------------------------------------
+*/
+void Setup()
+{
+/********************************************************************
+*   Configura el Reloj del Sistema                                  *
+*********************************************************************/
+    confSysClock();           // Inicialización del Sistema, Configure system clock (72MHz HSE clock, 48MHz USB clock)
+/********************************************************************
+*   Configura la Terminal Serial                                    *
+*********************************************************************/
+    terminal.baud(BAUD_RATE);       // Se configura la velocidad de transmisión e inicia la comunicación serial.
+    terminal.printf("\e[2J\e[H");   // Clear Screen
+    terminal.printf(" System is Wake Up!.\n\r");
+/********************************************************************
+*   Prueba del Buzzer                                               *
+*********************************************************************/
+    terminal.printf("Testing Buzzer... \n\r");
+    Buzzer_Beep();
+/********************************************************************
+*   Configufración de la Interfaz al LCD                            *
+*********************************************************************/
+    Init_Interfaces();
+/********************************************************************
+*   Prueba de instalación de la interface al LCD    Mucho OjO !!!   *
+*********************************************************************/
+
+/*--------------------------------------------------------------------
+|   Configuración de la dirección de datos en la interface I2C
+---------------------------------------------------------------------- */
+#if LCD_INTERFACE == 1
+    terminal.printf("LCD on I2C interface Address: \e[1;33;40m0x%X \e[0m\n\r",I2C_ADDRESS);  
+#endif
+/*--------------------------------------------------------------------
+|   Configuración de la dirección de datos en la interface SPI
+---------------------------------------------------------------------- */
+#if LCD_INTERFACE == 2
+    terminal.printf("LCD on SPI interface \n\r"); 
+    if ((SPI1 -> CR1 & 0x0080) > 0) terminal.printf ("SPI LSB First \n\r");
+    else terminal.printf ("SPI MSB First \n\r");
+#endif
+/*--------------------------------------------------------------------
+|   Prueba la interface y la Pantalla LCD
+---------------------------------------------------------------------- */
+    terminal.printf("LCD Test, please wait...\n\r");  
+    Test_LCD();                   // Rutina de prueba del LCD
+    terminal.printf("LCD Initialized Succesfuly...\n\r");
+/********************************************************************
+*   Arranque de la Interrupción por el Ticker                       *
+**********************************************************************/
+    terminal.printf("Ticker Starting Now...\n\r"); 
+    timer_int.attach_us(&TimerInt_OnInterrupt, TICKER_RATE);  // Le asigna el periodo de interrupción de 1ms (TICKER_RATE=1000)
+    terminal.printf(" System is Ready to Work !!!\n\r");    // Termina la Inicialización
+}   // End Setup
+
+/*!
+*-----------------------------------------------------------------------
+*     Función     :     Init_Interfaces()
+* @brief 
+*     Descripción :     Configura e inicializa las interfaces de comunicaciones
+* @param
+*     Parámetros  :     Ninguno
+* @return
+*     Retorna     :     Nada
+*-----------------------------------------------------------------------
+*/
+void Init_Interfaces() 
+{
+/********************************************************************
+*   Configuración del Bus I2C      / Mucho OjO !!!                  *
+*********************************************************************/
+#if LCD_INTERFACE == 1           /* LCD Utilizando el I2C */
+/*--------------------------------------------------------------------
+|   Configuración utilizando las Classes de Mbed 
+---------------------------------------------------------------------- */
+/* 
+    i2c_wire.frequency(1000000);    // Frecuencia de operación para el I2C (1MHz)
+    i2c_wire.start();               // Inicio de operación para el I2C
+*/
+/*--------------------------------------------------------------------
+|   Configufración del Bus I2C utilizando HAL y los Registros 
+|   Configuración utilizando los Registros (Consultar RM0008 pag. 758)
+---------------------------------------------------------------------- */
+//    HAL_RCC_APB2ENR               // Registros de Configuración para Habilitación de Reloj de Periféricos
+RCC -> APB1ENR |= 0x02000000;       // Habilita el I2C1 (I2C1_EN)
+RCC -> APB2ENR |= 0x00000001;       // Habilita las Funciones Avanzadas de E/S (AFIO_EN)
+//    HAL_I2C_CR1                   // Registros de Control del I2C1
+I2C1 -> CR1 |= 0x0400;              // CK: Acknowledge enable
+I2C1 -> CR1 |= 0x0200;              // STOP: Stop generation
+I2C1 -> CR1 |= 0x0100;              // START: Start generation
+I2C1 -> CR1 |= 0x0020;              // ENPEC: PEC enable
+I2C1 -> CR1 |= 0x0002;              // SMBUS: SMBus mode
+I2C1 -> CR1 |= 0x0001;              // PE: Peripheral enable */
+    terminal.printf("I2C Initialized...\n\r");
+/*--------------------------------------------------------------------
+|   Busca Dispositivos I2C conectados al Bus
+---------------------------------------------------------------------- */
+    I2C_Scanner();                  // Busca Dispositivos I2C conectados al Bus
+#endif
+
+/********************************************************************
+*   Configufración del SPI          / Mucho OjO !!!                 *
+*********************************************************************/
+#if LCD_INTERFACE == 2    /* LCD Utilizando el SPI */
+/*--------------------------------------------------------------------
+|   Prueba del SN74HC595 a la Interface al SPI 
+---------------------------------------------------------------------- */
+    terminal.printf("\rPrueba del SPI y SN74HC595 \r\n ");
+    SSel=FALSE;                             // Activa la señal SS
+    int respuesta = spi_lcd.write(0xFF);
+    SSel=TRUE;                              // Desactiva la señal SS
+    SSel=FALSE;                             // Activa la señal SS
+        respuesta = spi_lcd.write(0xAA);
+    SSel=TRUE;                              // Desactiva la señal SS
+    SSel=FALSE;                             // Activa la señal SS
+        respuesta = spi_lcd.write(0x55);
+    SSel=TRUE;                              // Desactiva la señal SS
+    SSel=FALSE;                             // Activa la señal SS
+        respuesta = spi_lcd.write(0x00);
+    SSel=TRUE;                              // Desactiva la señal SS
+    terminal.printf("\rSPI funciona OK! \r\n");
+
+/*--------------------------------------------------------------------
+|   Configuración utilizando las Classes de Mbed 
+---------------------------------------------------------------------- */
+    spi_lcd.frequency(1000000);      // Frecuencia de operación para el SPI 1MHz
+    spi_lcd.format(8,0);            // Número de Bits y Modo de Operación para el SPI POL=1 PHA=1
+//    spi_lcd.frame(1);             // Formato de la Trama para el SPI
+    SPI1 -> CR1 |= 0x0080;          // Formato de la Trama (LSBFIRST): 0 = MSB (default), 1= LSB
+    SSel=FALSE;                     // Desactiva el Latch del SN74HC595  
+    terminal.printf("SPI Initialzed...\n\r");
+#endif
+}
+
+/*! @brief
+** ===================================================================
+**    Función     :     Función I2C_Scanner()   
+**    Descripción :     Busca dispositivos conectados al Bus I2C
+**    Parámetros  :     Ninguno        
+**    Retorna     :     Nada
+** ===================================================================
+*/
+void I2C_Scanner()
+{
+#if LCD_TYPE == 1                       // Definición para pines del LCD con interfaz I2C
+    terminal.printf ("I2C scanner. Scanning ...");
+    uint8_t count = 0;
+    char     data;
+    char     test[] = {0x55,0xAA,0x0F,0xF0,0xFF,0x00};      // Patrón de Prueba
+    i2c_lcd.frequency(100000);          // Frecuencia de operación para el I2C (100KHz)
+    i2c_lcd.start();                    // Inicio de operación para el I2C  
+    for (int i = 8; i < 128; i++) {
+        uint8_t acknoledge = i2c_lcd.write (i,test,6,1);    //(dirección, ap_datos, N°_datos, repetición)
+//    uint8_t acknoledge = i2c_lcd.write (i,test,6);          //(dirección, ap_datos, N°_datos, repetición)
+        if (acknoledge == 0) {
+            terminal.printf ("\n\rFound address: ");
+            terminal.printf ("%u DEC",i);                   // Valor de la dirección en Decimal
+            terminal.printf (" (0x%x HEX)\n\r",i);          // Valor de la dirección en Hexadecimal
+            data = i2c_lcd.read (i);    //(dirección, ap_datos, N°_datos, repetición)
+            terminal.printf ("Data: (0x%hd HEX)\n\r",data); // Valor de la dirección en Hexadecimal
+            count++;
+            wait (1);                   // maybe unneeded?
+        } // end of good response
+        led_monitor = !led_monitor;     // Parapadeo del LED
+    } // end of for loop
+    led_monitor = 1;                    // Apaga el LED
+    i2c_lcd.stop();                     // Fin de operación para el I2C
+    terminal.printf ("\n\rDone.\n\r");
+    terminal.printf ("Found %d Device(s)\n\r",count);
+#endif
+}  // end of I2C Scanner
+
+/**
+*-------------------------------------------------------------------------------
+* @brief
+*     Función     :     Test_LCD()
+*
+*     Descripción :     Rutina para inicialización del LCD y funciones 
+*                       de la Bluepill
+* @param
+*     Parámetros  :     Ninguno
+* @return   
+*     Retorna     :     Nada
+*-------------------------------------------------------------------------------
+*/
+void Test_LCD()
+{
+//    lcd.init(TextLCD::LCDDatalength, 4 ); // Configura el LCD en Modo 4 Bits (Modo GPIO)
+    lcd.setBacklight(TextLCD::LightOn);     // Enciende la Iluminación de Fondo
+    lcd.setCursor(TextLCD::CurOff_BlkOff);  // Apaga el Cursor y Apaga el Parpadeo
+    lcd.cls();                              // Limpia la Pantalla LCD
+    lcd.printf("Hello World!\n");           // El LCD saluda al Mundo!
+    lcd.setInvert(ON);
+    lcd.printf("Hola Mundo!\n");            // El LCD saluda al Mundo!
+    lcd.setInvert(OFF);
+    lcd.printf("Ciao Mondo!\n");            // El LCD saluda al Mundo!
+    lcd.setInvert(ON);
+    lcd.printf("Bonjour le Monde");         // El LCD saluda al Mundo!
+    lcd.setInvert(OFF);
+    wait(5);
+    lcd.cls();                              // Limpia la Pantalla
+    lcd.setCursor(TextLCD::CurOn_BlkOn);    // Cursor Encendido, Parpadeo Encendido
+    terminal.printf("TextLCD Enhanced Test. Columns=%d, Rows=%d\n\r", lcd.columns(), lcd.rows());
+    Timer Elpased_Time;                     // Inicializa el Tiempo a Transcurrir
+    Elpased_Time.start();                   // Comienza a contar el tiempo transcurrido
+    for (int row=0; row<lcd.rows(); row++) 
+    {
+        int col=0;
+        terminal.printf("MemAddr(Col=%d, Row=%d)=0x%02X\n\r", col, row, lcd.getAddress(col, row));
+//    lcd.putc('-');
+//        spi_lcd.lock();                     // Adquiere acceso exclusivo a este bus SPI.
+        lcd.putc('0' + row);                // Enumera los renglones
+//        spi_lcd.unlock();                   // Libera el acceso exclusivo a este bus SPI.
+        for (col=1; col<lcd.columns()-1; col++) 
+        {
+//            spi_lcd.lock();                 // Adquiere acceso exclusivo a este bus SPI.
+            lcd.putc('*');                  // Llena la línea con el caracter "*"
+//            spi_lcd.unlock();               // Libera el acceso exclusivo a este bus SPI.
+        }
+        terminal.printf("MemAddr(Col=%d, Row=%d)=0x%02X\n\r", col, row, lcd.getAddress(col, row));
+//        spi_lcd.lock();                     // Adquiere acceso exclusivo a este bus SPI.
+        lcd.putc('+');                      // Al final de la línea agrega el "+"
+//        spi_lcd.unlock();                   // Libera el acceso exclusivo a este bus SPI.
+    }
+    Elpased_Time.stop();                    // Detiene el Contador de Ticks
+    terminal.printf("All my hard work took %f sec\r\n", Elpased_Time.read()); // Calcula el tiempo transcurrido
+    wait(1);                                // Espera por 1 segundo
+    terminal.printf("LCD Display and TextLCD Enhanced Test Completed.\n\r");
+    wait(1);                                // Espera 1 segundo
+    lcd.cls();                              // Limpia la Pantalla
+//  lcd.setBacklight(TextLCD::LightOff);      // Apaga la Iluminación de Fondo
+    lcd.setCursor(TextLCD::CurOff_BlkOn);   // Apaga el Cursor y Enciende el Parpadeo
+// Set and show user defined characters. A maximum of 8 UDCs are supported by the HD44780.
+// They are defined by a 5x7 bitpattern.
+    lcd.setUDC(0, (char *) udc_0);          // Selecciona el caracter para el cursor |>
+    lcd.putc(0);                            // Lo imprime en la Pantalla LCD
+    lcd.printf(" LCD Ready... ");           // El LCD está listo para usarse
+    wait(2);                                // Espera 2 segundos
+    lcd.setCursor(TextLCD::CurOff_BlkOff);  // Apaga el Cursor y Apaga el Parpadeo
+    terminal.printf("LCD Starting OK! ... \n\r");
+}
+
+/**
+*-------------------------------------------------------------------------------
+* @brief
+*     Función     :     Buzzer_Beep()
+*      
+*     Descripción :     Rutina para prueba del Buzzer
+* @param
+*     Parámetros  :     Ninguno
+* @return   
+*     Retorna     :     Nada
+*-------------------------------------------------------------------------------
+*/
+void Buzzer_Beep()                      // Software routine for Buzzer Beep
+{ 
+/*--------------------------------------------------------------------
+|   Configuración del Buzzer para Tipo Pasivo
+---------------------------------------------------------------------- */
+#if BUZZER_TYPE == 0
+  terminal.printf("Testing Pasive Buzzer... \n\r");
+  Buzzer_SetPeriodMode(0.001,1);      //Buzzer = 1KHz
+  wait_ms(750);
+  Buzzer_SetPeriodMode(0.001,0);      //Apaga el Buzzer 
+  wait_ms(125);
+  Buzzer_SetPeriodMode(0.001,1);      //Buzzer = 1KHz
+  wait_ms(250);
+  Buzzer_SetPeriodMode(0.001,0);      //Apaga el Buzzer 
+  wait_ms(125);
+  Buzzer_SetPeriodMode(0.001,1);      //Buzzer = 1KHz
+  wait_ms(500);
+  Buzzer_SetPeriodMode(0.001,0);      //Apaga el Buzzer 
+#endif
+/*--------------------------------------------------------------------
+|   Configuración del Buzzer para Tipo Activo
+---------------------------------------------------------------------- */
+#if BUZZER_TYPE == 1
+  terminal.printf("Testing Active Buzzer... \n\r");
+  buzzer = BUZZ_ON;
+  wait_ms(750);
+  buzzer = BUZZ_OFF;
+  wait_ms(125);
+  buzzer = BUZZ_ON;
+  wait_ms(250);
+  buzzer = BUZZ_OFF;
+  wait_ms(125);
+  buzzer = BUZZ_ON;
+  wait_ms(500);
+  buzzer = BUZZ_OFF;
+#endif
+  terminal.printf("Buzzer OK ! \n\r");
+}
+
+/**
+*-------------------------------------------------------------------------------
+* @brief
+*     Función     :     Buzzer_SetPeriodMode(Periodo, Estado)
+*      
+*     Descripción :     Emite un Tono por el Buzzer
+* @param
+*     Parámetros  :     Periodo: Periodo de la frecuencia a escuchar
+*                       Estado:  0 = Apagado, 1 = Encendido
+* @return   
+*     Retorna     :     Nada
+*-------------------------------------------------------------------------------
+*/
+void Buzzer_SetPeriodMode(float Periodo,bool Estado)
+{////
+    buzzer.period(Periodo);
+    if (Estado==1)buzzer=0.5f;      // Encience el Buzzer (Dutty = 50%)
+//    if (Estado==1)buzzer=Periodo*0.5f;
+    if (Estado==0)buzzer=BUZZ_OFF;
+}          
+
+/*! @fn
+** ===================================================================
+* @name
+*    Función     :     Clear_Screen()
+* @brief
+*    Descripción :     Limpia la Pantalla de la Terminal Serial
+* @param
+*    Parámetros  :     Ninguno
+* @return
+*    Retorna     :     Nada
+* @code
+*   ESC[H	mueve el cursor a la posición inicial (0, 0)
+*   ESC[J	borrar en pantalla (igual que ESC[0J)
+*   ESC[0J	borrar desde el cursor hasta el final de la pantalla
+*   ESC[1J	borrar desde el cursor hasta el principio de la pantalla
+*   ESC[2J	borrar toda la pantalla
+*   ESC[3J	borrar líneas guardadas
+*   ESC[K	borrar en línea (igual que ESC[0K)
+*   ESC[0K	borrar desde el cursor hasta el final de la línea
+*   ESC[1K	Borrar el inicio de la línea hasta el cursor
+*   ESC[2K	borrar toda la línea
+*
+** ===================================================================
+* @endcode
+*/
+void clear_screen() 
+{
+    // ANSI Terminal Commands
+    terminal.printf("\x1B[2J");     // secuencia de Escape  \e1B[2J
+    terminal.printf("\x1B[H");      // secuencia de Escape  \e1B[H
+}
+/**
+*-------------------------------------------------------------------------------
+* @brief
+*     Función     :     Blinking_LED)
+*      
+*     Descripción :     Parapadeo del Led
+* @param
+*     Parámetros  :     Ninguno
+* @return
+*     Retorna     :     Nada
+*-------------------------------------------------------------------------------
+*/
+void Blinking_Led()             // Software Blinking routine for LED
+{
+    // The on-board LED is connected, via a resistor, to +3.3V (not to GND).
+    // So to turn the LED on or off we have to set it to 0 or 1 respectively
+    led_monitor = 0;        // turn the LED on
+    wait_ms(200);           // 200 millisecond
+    led_monitor = 1;        // turn the LED off
+    wait_ms(1000);          // 1000 millisecond
+}
+/* END functions */
+
+/* END program */
+/*
+*+******************************************************************************      
+*+              La documentación va aquí!:
+*+******************************************************************************      
+*+   https://os.mbed.com/docs/mbed-os/v6.15/apis/spi.html
+*+   https://os.mbed.com/docs/mbed-os/v6.15/mbed-os-api-doxy/classmbed_1_1_s_p_i.html#ad67df83ace240f53c1276e24a37ff84c
+*+   https://www.digikey.com.mx/es/articles/why-how-to-use-serial-peripheral-interface-simplify-connections-between-multiple-devices
+*+   https://www.nxp.com/docs/en/data-sheet/PCF8574_PCF8574A.pdf
+*+
+*+------------------------------------------------------------------------------
+*+ Descripción del Registro de Control SPI_CR1 (not used in I2S mode)
+*+------------------------------------------------------------------------------
+*+   15   14   13   12   11   10    9    8    7     6    5   4  3    2    1    0
+*+ +----+----+----+----+----+----+----+----+-----+----+-----------+----+---------+
+*+ |BIDI|BIDI|CRC | CRC|DFF | RX | SSM| SSI| LSB | SPE|    BR     |MSTR|CPOL|CPHA|
+*+ |MODE| OE | EN |NEXT|    |ONLY|    |    |FIRST|    |           |    |    |    |
+*+ +----+----+----+----+----+----+----+----+-----+----+-----------+----+---------+
+*+
+*+ Bit 15 BIDIMODE: Bidirectional data mode enable
+*+      0: 2-line unidirectional data mode selected
+*+      1: 1-line bidirectional data mode selected
+**      Note: This bit is not used in I2S mode
+*+
+*+ Bit 14 BIDIOE: Output enable in bidirectional mode
+*+      This bit combined with the BIDImode bit selects the direction of transfer in bidirectional mode
+*+      0: Output disabled (receive-only mode) 
+*+      1: Output enabled (transmit-only mode)
+*+      Note: This bit is not used in I2S mode.
+*+            In master mode, the MOSI pin is used while the MISO pin is used in slave mode.
+*+
+*+ Bit 13 CRCEN: Hardware CRC calculation enable
+*+      0: CRC calculation disabled
+*+      1: CRC calculation enabled
+*+      Note: This bit should be written only when SPI is disabled (SPE = ‘0’) for correct operation. 
+*+            It is not used in I2S mode
+*+
+*+ Bit 12 CRCNEXT: CRC transfer next
+*+      0: Data phase (no CRC phase) 
+*+      1: Next transfer is CRC (CRC phase)
+*+      Note: When the SPI is configured in full duplex or transmitter only modes, CRCNEXT must be 
+*+            written as soon as the last data is written to the SPI_DR register. 
+*+            When the SPI is configured in receiver only mode, CRCNEXT must be set after the 
+*+            second last data reception. 
+*+            This bit should be kept cleared when the transfers are managed by DMA.
+*+            It is not used in I2S mode.
+*+
+*+ Bit 11 DFF: Data frame format
+*+      0: 8-bit data frame format is selected for transmission/reception
+*+      1: 16-bit data frame format is selected for transmission/reception
+*+      Note: This bit should be written only when SPI is disabled (SPE = ‘0’) for correct operation.
+*+            It is not used in I2S mode
+*+
+*+ Bit 10 RXONLY: Receive only
+*+      This bit combined with the BIDImode bit selects the direction of transfer in 2-line 
+*+      unidirectional mode. This bit is also useful in a multislave system in which this particular 
+++      slave is not accessed, the output from the accessed slave is not corrupted.
+*+      0: Full duplex (Transmit and receive)
+++      1: Output disabled (Receive-only mode)
+*+      Note: This bit is not used in I2S mode
+*+
+*+ Bit 9 SSM: Software slave management
+**      When the SSM bit is set, the NSS pin input is replaced with the value from the SSI bit.
+*+      0: Software slave management disabled
+*+      1: Software slave management enabled
+*+      Note: This bit is not used in I2S mode
+*+
+*+ Bit 8 SSI: Internal slave select
+*+      This bit has an effect only when the SSM bit is set. The value of this bit is forced onto the 
+*+      NSS pin and the IO value of the NSS pin is ignored.
+*+      Note: This bit is not used in I2S mode
+*+
+*+ Bit 7 LSBFIRST: Frame format
+*+      0: MSB transmitted first
+*+      1: LSB transmitted first
+*+      Note: This bit should not be changed when communication is ongoing.
+*+      It is not used in I2S mode
+*+
+*+ Bit 6 SPE: SPI enable
+*+      0: Peripheral disabled
+*+      1: Peripheral enabled
+*+      Note: This bit is not used in I2S mode.
+*+      When disabling the SPI, follow the procedure described in Section 25.3.8.
+*+
+*+ Bits 5:3 BR[2:0]: Baud rate control
+*+          000: fPCLK/2
+*+          001: fPCLK/4
+*+          010: fPCLK/8
+*+          011: fPCLK/16
+*+          100: fPCLK/32
+*+          101: fPCLK/64
+*+          110: fPCLK/128
+*+          111: fPCLK/256
+*+      Note: These bits should not be changed when communication is ongoing.
+*+            They are not used in I2S mode.
+*+
+*+ Bit 2 MSTR: Master selection
+*+      0: Slave configuration
+*+      1: Master configuration
+*+      Note: This bit should not be changed when communication is ongoing.
+*+            It is not used in I2S mode.
+*+
+*+ Bit1 CPOL: Clock polarity
+*+      0: CK to 0 when idle
+*+      1: CK to 1 when idle
+*+      Note: This bit should not be changed when communication is ongoing.
+*+            It is not used in I2S mode
+*+
+*+ Bit 0 CPHA: Clock phase
+*+      0: The first clock transition is the first data capture edge
+*+      1: The second clock transition is the first data capture edge
+*+      Note: This bit should not be changed when communication is ongoing.
+*+            It is not used in I2S mode
+++
+*+
+*+------------------------------------------------------------------------------
+*+ Descripción del Registro de Control SPI_CR2 
+*+------------------------------------------------------------------------------
+*+   15   14   13   12   11   10    9    8    7     6    5   4  3    2    1    0
+*+ +----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
+*+ |                                       | TX | RX | ERR| Res| Res| SS | TX | RX |
+*+ |           Reservado                   |EIE |NEIE| IE |    |    | OE |DMA |DMA |
+*+ |                                       |    |    |    |    |    |    | EN | EN |
+*+ +----------------------------------+----+----+----+----+----+----+----+----+----+
+*+
+*+ Bit 7 TXEIE: Tx buffer empty interrupt enable
+*+      0: TXE interrupt masked 
+*+      1: TXE interrupt not masked. Used to generate an interrupt request when the TXE flag is set
+*+
+*+ Bit 6 RXNEIE: RX buffer not empty interrupt enable
+*+      0: RXNE interrupt masked 
+*+      1: RXNE interrupt not masked. Used to generate an interrupt request when the RXNE flag is 
+*+              set.
+*+
+*+ Bit 5 ERRIE: Error interrupt enable
+*+      This bit controls the generation of an interrupt when an error condition occurs (CRCERR, 
+*+      OVR, MODF in SPI mode and UDR, OVR in I2S mode).
+*+      0: Error interrupt is masked
+*+      1: Error interrupt is enabled
+*+ 
+*+ Bits 4:3 Reserved, must be kept at reset value.
+*+
+*+ Bit 2 SSOE: SS output enable
+*+      0: SS output is disabled in master mode and the cell can work in multimaster configuration
+*+      1: SS output is enabled in master mode and when the cell is enabled. The cell cannot work 
+*+         in a multimaster environment.
+*+      Note: This bit is not used in I2S mode
+*+
+*+ Bit 1 TXDMAEN: Tx buffer DMA enable
+*+      When this bit is set, the DMA request is made whenever the TXE flag is set.
+*+      0: Tx buffer DMA disabled
+*+      1: Tx buffer DMA enabled
+*+
+*+ Bit 0 RXDMAEN: Rx buffer DMA enable
+*+      When this bit is set, the DMA request is made whenever the RXNE flag is set.
+*+      0: Rx buffer DMA disabled
+*+      1: Rx buffer DMA enabled
+*+
+*+
+*+------------------------------------------------------------------------------
+*+  Conexión de pines a los Registros de Corrimiento: SN74HC595 o CD4094
+*+------------------------------------------------------------------------------
+*+
+*+ Definición de pines:
+*+                           __      Vdd GND
+*+ MCU         MOSI MISO SCK SS       |   |    
+*+               |   |   |   |       10K  |   
+*+               |   |   |   |        |   |    
+*+ CD 4094     DATA NC CLOCK STROBE  NC  OE  QS  ---> DATA en la siguiente etapa
+*+ 74HC 595     SER NC SCLK RCLK    SCLR  G  QH' ---> SER en la siguiente etapa
+*+
+*+ CD 4094      Q1  Q2  Q3  Q4   Q5  Q6  Q7  Q8
+*+ 74HC 595     QA  QB  QC  QD   QE  QF  QG  QH
+*+               |   |   |   |    |   |   |   |
+*+               |   |   |   |    |   |   |   |               
+*+ HD44780      R/S  RW  E  BL+  DB4 DB5 DB6 DB7 
+*+
+*+ Notas: El pin RW del LCD debe estar estar siempre en "L" o conectado a GND.
+*+        El pin E2 es usado solo para el LCD40x4 (segundo controlador)
+*+        La señal BL = LED+ y debe ser usado para control del Backlight
+*+        Para enviar cualquier dato o instrucci¢n hay que hacer una     _    ^__
+*+        transici¢n de bajo a alto (^) en el pin de E (Enable) del LCD.  |___|
+*+ 
+*+          
+*+          _   _   _   _  _   _   _   _  _   _   _   _  _   _   _   _  _   _   _   _ 
+*+  SCLK  _| |_| |_| |_| _| |_| |_| |_| _| |_| |_| |_| _| |_| |_| |_| _| |_| |_| |_| |_
+*+
+*+  SER    b0  b1  b2  b3  b4  b5  b6  b7     B0  B1  B2  B3  B4  B5  B6  B7  B8  B7  
+*+        _______________________________   ________________________________________   _
+*+  RCLK                                 |_|                                        |_|
+*+  
+*+  QA                                        b7                                        B7
+*+  QB                                        b6                                        B6
+*+  QC                                        b5                                        B5
+*+  QD                                        b4                                        B4
+**  QE                                        b3                                        B3
+*+  QF                                        b2                                        B2
+*+  QG                                        b1                                        B1
+*+  QH                                        b0                                        B0
+*+
+*+------------------------------------------------------------------------------
+*+ Descripción del Registro de Corrimiento SN74HC595:
+*+------------------------------------------------------------------------------
+*+
+*+                  Truth Table
+*+                      ____   _
+*+              RCK SCK SCLR   G            Function
+*+               X   X    X    H     QA thru QH  --> TRI-STATE
+*+               X   X    L    L     Shift Register Cleared, QH'=0
+*+               X   ^    H    L     Shift Register Clocked
+*+               ^   X    H    L     Shift Register to Output Latches
+*+
+*+
+*+      Vcc          Vcc
+*+       O            O
+*+       |            |                SPI                    SPI 
+*+       |         16 |              LSBFIRST          Mode | Polarity Phase
+*+       |      ______|______        0      1          -----+---------------  
+*+       |  10 |             | 15                        0  |    0       0
+*+        -----| SCLR     QA |----- DB7    RS            1  |    0       1
+*+             |             |                           2  |    1       0
+*+             |             | 1                         4  |    1       1
+*+             |          QB |----- DB6    RW
+*+             |             |
+*+          14 |             | 2
+*+ MOSI   -----| SER      QC |----- DB5    E
+*+             |             |
+*+           9 |             | 3
+*+ MISO   -----| QH'      QD |----- DB4    BL+
+*+             |             |
+*+          11 |             | 4 
+*+ SCLK   -----| SCK      QE |----- BL+    DB4
+*+             |             |
+*+          12 |             | 5
+*+ SSEL   -----| RCLK     QF |----- E      DB5
+*+             |             |
+*+             |             | 6
+*+             |          QG |----- RW     DB6  
+*+             |             |
+*+             |             | 7
+*+             |          QH |----- RS     DB7
+*+             |             |
+*+             |           _ | 13
+*+             |           G |------
+*+             |_____________|     |
+*+                  8 |            |
+*+                    |            |
+*+                  -----        -----
+*+                   ---          ---
+*+                    -            -
+*+
+********************************************************************************
+**      Descripción del Funcionamiento del Display LCD con Interfaz HD44780:
+********************************************************************************
+*+-----------------------------------------------------------------------------
+*+ Direccinamiento de la RAM del Display:
+*+------------------------------------------------------------------------------
+*+
+*+ Los módulos de 8x1 (obsoletos) están arreglados como una líneas de
+*+ 8 caracteres de lada a lado.
+*+  "Linea 1" Las direcciones comienzan en 80h a 87h
+*+
+*+ Los módulos de 16x1 están arreglados como dos líneas de 8 caracteres de lada a lado.
+*+  "Linea 1" Las direcciones comienzan en 80h a 87h (primera parte de la línea)
+*+  "Linea 1" Las direcciones comienzan en C0h a C7h (segunda parte de la línea)
+*+  de manera que al escribir caracteres al módulo, el cursor se incrementará automaticamente
+*+  hasta alcanzar el 9° caracter entonces tendrá que mover el cursor a la dirección C0h antes
+*+  de escribir el 9° caracter en el módulo de 1x16.
+*+
+*+  Módulo de 16x2 es dos líneas por 16 caracteres
+*+  "Linea 1" Las direcciones comienzan en 80h a 8Fh
+*+  "Linea 2" Las direcciones comienzan en C0h a CFh
+*+
+*+  Módulo de 16x4
+*+  "Linea 1" Las direcciones comienzan en 80h a 8Fh
+*+  "Linea 2" Las direcciones comienzan en C0h a CFh
+*+  "Linea 3" Las direcciones comienzan en 90h a 9Fh
+*+  "Linea 4" Las direcciones comienzan en D0h a DFh
+*+
+*+  Módulo de 20x1
+*+  "Linea 1" Las direcciones comienzan en 80h a 93h
+*+
+*+  Módulo de 20x2
+*+  "Linea 1" Las direcciones comienzan en 80h a 93h
+*+  "Linea 2" Las direcciones comienzan en C0h a D3h
+*+
+*+  Módulo de 20x4
+*+  "Linea 1" Las direcciones comienzan en 80h a 93h
+*+  "Linea 2" Las direcciones comienzan en C0h a D3h
+*+  "Linea 3" Las direcciones comienzan en 94h a A7h
+*+  "Linea 4" Las direcciones comienzan en D4h a E7h
+*+
+*+  Módulo de 24x2
+*+  "Linea 1" Las direcciones comienzan en 80h a 98h
+*+  "Linea 2" Las direcciones comienzan en C0h a D8h
+*+
+*+  Módulo de 32x2
+*+  "Linea 1" Las direcciones comienzan en 80h a A0h
+*+  "Linea 2" Las direcciones comienzan en C0h a E0h
+*+
+*+  Módulo de 40x2
+*+  "Linea 1" Las direcciones comienzan en 80h a A7h
+*+  "Linea 2" Las direcciones comienzna en C0h a E7h
+*+
+*+------------------------------------------------------------------------------
+*+ Definici¢n de bits:
+*+------------------------------------------------------------------------------
+*+
+*+ I/D=1:   (Increment/Decrement) Incremento (+) del Cursor
+*+ I/D=0:   (Increment/Decrement) Decremento (-) del Cursor
+*+ D=0:     (Display) Apaga el Display
+*+ D=1:     (Display) Enciende el Display
+*+ C=0:     (Cursor) Apaga el Cursor
+*+ C=1:     (Cursor) Enciende el Cursor
+*+ B=0:     (Blinking) Apaga el parpadeo del Cursor
+*+ B=1:     (Blinking) Enciende el parpadeo del Cursor
+*+ S=0:     (Shift) Sin corrimiento del Display
+*+ S=1:     (Shift) Con corrimiento del Display
+*+ S/C=1:   (Shift/Cursor) Con corrimiento del Display
+*+ S/C=0:   (Shift/Cursor) Con Movimiento del Cursor
+*+ R/L=1:   (Right/Left) Corrimiento a la Derecha
+*+ R/L=0:   (Right/Left) Corrimiento a la Izquierda
+*+ DL=1:    (Data Lenght) 8 Bits de datos
+*+ DL=0:    (Data Lenght) 4 Bits de datos
+*+ N=1:     (Number Lines) Modo de 2 Líneas de despliege
+*+ N=0:     (Number Lines) Modo de 1 Línea de despliege
+*+ F=1:     (Font) 5X10 Puntos por caracter
+*+ F=0:     (Font) 5X7 Puntos por caracter
+*+ BF=1:    (Busy Flag) Operación interna en proceso
+*+ BF=0:    (Busy Flag) Listo para aceptar instrucciones/datos
+*+ DDRAM:   (Display Data Ram)
+*+ CGRAM:   (Character Generator RAM)
+*+ ACC:     Address of CGRAM
+*+ ADD:     Address of DDRAM These correspond to curser addresses.
+*+ AC:      Address counter used for both DDRAM and CGRAM
+*+
+*+                              RS RW  MSB                         LSB
+*+ Clear Display                0  0    0   0   0   0   0   0   0   1
+*+ Cursor at Home               0  0    0   0   0   0   0   0   1   0
+*+ Entry Mode Set               0  0    0   0   0   0   0   1  I/D  S
+*+ Display ON/OFF control       0  0    0   0   0   0   1   D   C   B
+*+ Cursor/Display Shift         0  0    0   0   0   1  S/C R/L  x   x
+*+ Function Set                 0  0    0   0   1   DL  N   F   x   x
+*+ CGRAM                        0  0    0   1   -------- ACC --------
+*+ DDRAM                        0  0    1   ---------- ADD ----------
+*+ Busy Flag/Address Read       0  1    1   -----------AC------------
+*+ CGRAM/CDDRAM Data Write      1  0            Write Data
+*+ CGRAM/CDDRAM Data Read       1  1            Read  Data
+*+
+*+
+*+------------------------------------------------------------------------------
+*+ Tiempos de Ejecución:
+*+------------------------------------------------------------------------------
+*+ Dependiendo del Oscilador Interno del LCD los tiempos de ejecución de las
+*+ instrucciones pueden variar.
+*+                                          Fosc
+*+   INSTRUCCION            160Khz          250Khz          270Khz
+*+   Clear Display          120us~4.9ms     82us~1.6ms      40us~1.5ms
+*+   Cursor Home            120us           40~1.6ms        37us~1.5ms
+*+   Todas las demás        120us           40us            37us
+*+   Lectura/Escritura      120us           40us            37us
+*+   Lectura de Busy Flag   1us             1us             1us
+*+
+*+------------------------------------------------------------------------------
+*+ Ubicaciónn de pines:
+*+------------------------------------------------------------------------------
+*+      ---------------------------------------------------------------------
+*+      |  _______________________________________________________________  |
+*+      | |                                                               | |
+*+      | |                                                               | |
+*+      | |                                                               | |
+*+      | |                                                               | |
+*+      | |                                                               | |
+*+      | |                                                               | |
+*+      | |_______________________________________________________________| |
+*+      |                                                                   |
+*+      ---------------------------------------------------------------------
+*+                          |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+*+                          |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+*+                          16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1
+*+
+*+   1   Vss - GND
+*+   2   Vdd - Vcc
+*+   3   Vee - Ajuste de contraste
+*+   4   RS  - (Register/String) 0=Entrada de Instrucción, 1=Entrada de Dato
+*+   5   RW  - Lectura/Escritura 0=Escribe al LCD, 1=Lee del LCD
+*+   6   E   - Señal de Habilitación  "101"
+*+   7   DB0 - Línea 0 del bus de datos
+*+   8   DB1 - Línea 1 del bus de datos
+*+   9   DB2 - Línea 2 del bus de datos
+*+   10  DB3 - Línea 3 del bus de datos  _
+*+   11  DB4 - Línea 4 del bus de datos   |
+*+   12  DB5 - Línea 5 del bus de datos    \  Operación en 4 bits
+*+   13  DB6 - Línea 6 del bus de datos    /
+*+   14  DB7 - Línea 7 del bus de datos  _|
+*+   15  BL+ - Ánodo  Backlight
+*+   16  BL- - Cátodo Backlight
+*+
+*+------------------------------------------------------------------------------
+*+  Señales a la Interfaz LCD
+*+------------------------------------------------------------------------------
+*+
+*+      Señales Interfaz LCD        RS    RW   E     BL+   D4    D5    D6     D7
+*+      Interfaz Paralela           PA_8  GND  PA_10 PWM   PB_4  PB_3  PA_15  PA_12
+*+      Interfaz I2C (PCF8574)      P0    P1   P2    P3    P4    P5    P6     P7   
+*+      Interfaz SPI (74HC595)      QH    QG   GF    QE    QD    QC    QB     QA 
+*+
+*+  +5V --------*------ Vcc          
+*+              |                    
+*+              /
+*+      10k to  \<----- Vee          R/W ---> GND
+*+      20k pot /                    A   ---> PWM1 o   R=330 ---> Vcc
+*+              \                    K   ---> GND
+*+              |
+*+  GND --------*------ Vss
+*+
+*+------------------------------------------------------------------------------
+*+
+*+   El controlador podría estar en modo de 8 bits (reinicio de encendido)
+*+   o en modo de 4 bits (reinicio en caliente) en este punto.
+*+   Siga este procedimiento para asegurarse de que el controlador entre en el
+*+   estado correcto.
+*+
+*+------------------------------------------------------------------------------
+*+ Inicializaci¢n del Display de Cristal Líquido Alfanumérico en modo de 4 bits
+*+------------------------------------------------------------------------------
+*+
+*+  1.- Encender el Display
+*+  2.- No esperar más de 15ms
+*+  3.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   X    1    1    0    0
+*+      No Esperar más de 4.1ms
+*+  4.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   X    1    1    0    0
+*+       No Esperar más de 4.1ms
+*+  5.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   X    1    1    0    0
+*+       Esperar no más de 4.1ms
+*+  6.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   X    0    1    0    0
+*+       Esperar no más de 4.1ms
+*+  7.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   X    0    1    0    0
+*+      0   0   0   X    X    X    N    F       Número de Líneas y Tamaño del Font
+*+  8.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   X    0    0    0    0
+*+      0   0   0   X    0    0    0    1       Pantalla Apagada
+*+  9.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   X    0    0    0    0
+*+      0   0   0   X    1    0    0    0       Pantalla Limpiada
+*+ 10.- RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      0   0   0   1    0    0    0    0
+*+      0   0   0   1    S    I/D  1    0       Avance del Cursor y Pantalla
+*+      Lista para Recibir Caracteres
+*+
+*+   Para escribir un Byte en Modo de 4 bits en el LCD el procedimiento consiste 
+*+   en escribir primeramente el Nibble Más Significativo (MSN) seguido del 
+*+   Nibble Menos Significativo (LSN).
+*+
+*+   El procedimeieto para enviar un comando o escribir un caracter en el display
+*+   consiste de 4 escrituras al Display LCD y es como sigue:
+*+   1.- Seleccionar en la señal RS (Register/String) el comando o dato a escribir
+*+        RS = 0  Instrucción   (Registro)
+*+        RS = 1  Dato          (Cadena)
+*+   2.- Seleccionar en la señal E  (Enable) en 0 = Deshabilitada la 
+*+       Lectura/Escritura al Display LCD
+*+   3.- Seleccionar en la señal RW (Read/Write) en 0 = Escritura
+*+   4.- Seleccionar el Nibble a escrbir (MSN) o (LSN)
+*+   5.- Enviar las señales anteriores a los pines del Display LCD
+*+   6.- Cambiar la señal E (Enable) a 1 para havilitar la escritura al LCD
+*+   7.- Enviar las señales anteriores a los pines del Display LCD
+*+
+*+      RS  RW  E   BL+  DB4  DB5  DB6  DB7
+*+      X   0   0   1    X    X    X    X       Prepara Nibble Más Significativo
+*+      X   0   1   1    X    X    X    X       Escribe Nibble Más Significativo
+*+      X   0   0   1    x    x    x    x       Prepara Nibble Menos Significativo
+*+      X   0   1   1    x    x    x    x       Escribe Nibble Menos Significativo
+*+
+*+ Notas: El pin RW del LCD debe estar estar siempre en "L" o conectado a GND.
+*+        El pin E2 es usado solo para el LCD40x4 (segundo controlador) LCD40X4
+*+        La señal BL+ = LED+ debe ser usada para control del Backlight
+*+        Para enviar cualquier instrucción o dato (RS) hay que hacer una    __
+*+        transición de bajo a alto en el pin de E (Enable) del LCD.  ______|  
+*+
+*+
+*+******************************************************************************
+*+// Patrón de Configuración del LCD  en modo de 4 bits (LSN first)
+*+******************************************************************************
+*+   char init_LCD[] = {0b00000000, 0b00000000, // Datos en DB7=DB6=DB5=DB4=0, LED+=0, EN=0,RW=0,RS=0
+*+                      0b00111110, 0b00111010, // Datos en DB5=DB4=1, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00111110, 0b00111010, // Datos en DB5=DB4=1, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00111110, 0b00111010, // Datos en DB5=DB4=1, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00101110, 0b00100010, // Datos en DB5=1, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00101110, 0b00100010, // => Function Set Control: DB5=1, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b10001110, 0b10001110, // => Function Set Control: DB7=N=1 2 líneas, DB6=F=0 5x7puntos, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00001110, 0b00000010, // => Display ON/OFF Control: DB7=DB6=DB5=DB4=0, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00101110, 0b00100010, // => Display ON/OFF Control: DB7=1 (Display off, cursor off, blink off),LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00001110, 0b00000010, // => Display Clear: DB7=DB6=DB5=DB4=0, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00011110, 0b00010010, // => Display Clear: D4=1, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00001110, 0b00000010, // => Cursor Home: DB7=DB6=DB5=DB4=0, LED+=1, EN=1,0,RW=1,RS=0
+*+                      0b00101110, 0b00100010, // => Cursor Home: DB5=1, LED+=1, EN=1,0,RW=1,RS=0 , (Cursor Home};
+*+                      0b01001111, 0b00001011, // => Text 0x48: DB5=1, LED+=1, EN=1,0,RW=1,RS=1
+*+                      0b10001111, 0b00101011, // => Text "H" : DB7=1, LED+=1, EN=1,0,RW=1,RS=1 , (ASCII "H"}
+*+                      0b01101111, 0b01101011, // => Text 0x6F: DB5=1, LED+=1, EN=1,0,RW=1,RS=1
+*+                      0b11111111, 0b11111011, // => Text "o" : DB7=DB6=DB5=DB4=1, LED+=1, EN=1,0,RW=1,RS=1 , (ASCII "o"}
+*+                      0b01101111, 0b01101011, // => Text 0x6C: DB6=DB5=1, LED+=1, EN=1,0,RW=1,RS=1
+*+                      0b11001111, 0b11001011, // => Text "l" : DB7=DB6=1, LED+=1, EN=1,0,RW=1,RS=1 , (ASCII "l"}
+*+                      0b01101111, 0b01101011, // => Text 0x61: DB6=DB5=1, LED+=1, EN=1,0,RW=1,RS=1
+*+                      0b00011111, 0b00011011, // => Text "a" : DB4=1, LED+=1, EN=1,0,RW=1,RS=1 , (ASCII "a"}
+*+                      0b00101111, 0b00101011, // => Text 0x21: DB5=1, LED+=1, EN=1,0,RW=1,RS=1
+*+                      0b00011111, 0b00011011};// => Text "!" : DB4=1, LED+=1, EN=1,0,RW=1,RS=1 , (ASCII "!"}
+*+
+*+   La interfaz de hardware entre el MCU y la LCD  en modo de 8 bits solo puede
+*+   recibir los 4 bits más significativos (Nibble más significativo, MSN)
+*+   como instrucción para cambier a modo 4.
+*+   En el modo de 4 bits, la pantalla LCD espera el MSN primero, seguido del LSN.
+*+
+*+ Nota: En estos modos de operación el Pin R/W permanece en modo "Escritura" 
+*+       o sea en "L" o GND*+
+*+
+*+-------------------------------------------------------------------------------
+*+                               EJERCICIO
+*+
+*+ 1.- Modificar el programa para crear un conjunto de caracteres especiales 
+*+     en la Pantalla LCD editando el archivo TextLCD_UDC.h  y dar de alta 
+*+     los nuevos caracteres de la forma:
+*+     extern const char udc_Algo[]; 
+*+ 2.- En el archivo Text_LCD_UDC.inc definir el caracter a implementar de la forma: 
+*+     const char udc_Algo[]    =  {0x05, 0x0A, 0x5A, 0xA5, 0x55, 0xAA, 0x50, 0xA0}; 
+*+
+*+ Tip.- Para no dañar los archivos originales, DUPLICAR  estos y renombrarlos con
+*+       la extension .h.bak y .inc.bak de la siguiete manera:
+*+        Text_LCD_UDC.inc ---> Text_LCD_UDC.inc_copy ---> Text_LCD_UDC.inc.bak 
+*+        Text_LCD_UDC.h   ---> Text_LCD_UDC.h_copy   ---> Text_LCD_UDC.h.bak 
+*+       y utilizar las los originales para modificarlas para el ejercicio
+*+
+*+ 
+*+                              EXAMEN
+*+ 
+*+  Desarrollar un menú de navegación en la pantalla LCD mediante una lista circular y 
+*+  utilizando un carácter especial para indicar la posición de la opción a seleccionar.
+*+  La navegación para interactuar en el menú se realizará a través de un teclado por 
+*+  medio de unos botones tipo push botton los cuales estarán conectados a un Registro 
+*+  de Corrimiento tipo PISO (Parallel Input, Serial Output) como lo son: SN74HC165, 
+*+  CD4014, CD4021, esto es, utilizando las señales MISO, SCLK y SSEL del Puerto SPI.
+*+
+*+
+*+------------------------------------------------------------------------------
+*+
+*+   Powered by
+*+
+*+          T H E     A N T U L I U ' S   T E A M   R&D  Unltd
+*+
+*+  Research, Development, Systems, Equipment, Support & Spare Parts.
+*+  (C) Copyright 1989-2023, All Rights Reserved
+*+
+*+  Welcome to The Beaners Proyect Community!
+*+----------------------------------------------------------------------------*/
+
+/* END Mbed */
+
